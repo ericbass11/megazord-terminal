@@ -128,6 +128,32 @@ as happily when the error it expects has disappeared. Every type-level proof is 
 '@ts-expect-error' directive`, then restoring. If the guarantee stops holding, `npm run build`
 must fail — a comment is not enforcement.
 
+### Falsify at the guarantee, not at the test
+
+When breaking a type-level proof, edit the **source of the guarantee**, not the test that consumes
+it. Removing the brand from `Money` made both probes in `money.test.ts` report `TS2578` in a single
+`tsc` run; replacing `CoreCapability = Exclude<Capability, ExecutionCapability>` with `= Capability`
+did the same for both Core probes. Falsifying by widening a helper inside the test file proves only
+that the scaffolding is wired up — it says nothing about the invariant.
+
+Two mechanics worth not rediscovering:
+
+- `@ts-expect-error` on an element of an array-literal argument anchors to that element, so a probe
+  can sit inside a call's argument list.
+- TypeScript does **not** narrow through an aliased compound condition that uses `in` — extracting
+  `typeof x === "object" && x !== null && "name" in x && typeof x.name === "string"` into a `const`
+  loses the narrowing and `x.name` goes back to `unknown`. Keep that condition inline in the `if`.
+
+### The Core lives in capability.ts
+
+`Core` (the type) and `core()` (its constructor) are defined in `engine/domain/capability.ts`,
+next to the invariant they exist to enforce — acceptance criterion 2 cannot be proven without a
+Core-shaped holder to hand a capability to. Later tasks **reuse** that `Core`; a second definition
+in `mission.ts` would split the invariant across two places and one of them would rot.
+
+`core()` is where the two layers meet: the parameter type refuses an `ExecutionCapability` at
+compile time, and `assertNoExecution` refuses one that was forced through a cast at runtime.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

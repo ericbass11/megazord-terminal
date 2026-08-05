@@ -18,3 +18,34 @@ export {
   type MissionId,
   type ZordId,
 } from "./domain/ids";
+
+export {
+  InvalidMoneyError,
+  ZERO_MONEY,
+  addMoney,
+  centsOf,
+  compareMoney,
+  formatMoney,
+  moneyFromCents,
+  moneyFromDecimal,
+  type Money,
+} from "./domain/money";
+
+export {
+  EXECUTION_CAPABILITY_NAMES,
+  ExecutionCapabilityError,
+  ORCHESTRATION_CAPABILITY_NAMES,
+  UnknownCapabilityError,
+  assertNoExecution,
+  core,
+  executionCapability,
+  isExecutionCapability,
+  orchestrationCapability,
+  type Capability,
+  type Core,
+  type CoreCapability,
+  type ExecutionCapability,
+  type ExecutionCapabilityName,
+  type OrchestrationCapability,
+  type OrchestrationCapabilityName,
+} from "./domain/capability";

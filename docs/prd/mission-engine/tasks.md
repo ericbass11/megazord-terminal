@@ -32,7 +32,7 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 2 — Money and Capability value objects
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: `Money` as integer BRL cents with add/compare and no float path; `Capability` with
   `ExecutionCapability` and `assertNoExecution`.
 - **Touches**: `engine/domain/money.ts`, `engine/domain/capability.ts` and their tests

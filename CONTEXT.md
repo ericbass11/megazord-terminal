@@ -44,6 +44,10 @@ The canonical function of a Zord — scout, builder, reviewer or controller. Det
 permission, not just naming.
 _Avoid_: position, kind, function
 
+**Capability**:
+A permission a Zord holds, either orchestrating or executing. The Core holds no executing one.
+_Avoid_: privilege, entitlement, tool access
+
 **Harness**:
 The resolved bundle of CLI, model, effort and skills a Zord runs a given task with.
 _Avoid_: config, setup, preset, profile
@@ -148,6 +152,7 @@ in conversation, right is what is written in code and in every artifact.
 | delegação      | `Delegation`  |
 | zord           | `Zord`        |
 | papel          | `Role`        |
+| capability     | `Capability`  |
 | harness        | `Harness`     |
 | effort         | `Effort`      |
 | combinação     | `Combination` |
