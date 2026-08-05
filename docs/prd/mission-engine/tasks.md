@@ -65,7 +65,7 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 5 — Harness resolution
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: `resolveHarness` with deterministic precedence roster > invocation > catalog default,
   resolved field by field.
 - **Touches**: `engine/domain/harness.ts` and test

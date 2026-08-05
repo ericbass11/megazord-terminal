@@ -66,6 +66,11 @@ _Avoid_: privilege, entitlement, tool access
 The resolved bundle of CLI, model, effort and skills a Zord runs a given task with.
 _Avoid_: config, setup, preset, profile
 
+**Catalog**:
+The registry of default Harness bundles, one per CLI, that a resolution falls back to when
+neither the Roster nor the invocation specifies a field.
+_Avoid_: registry, defaults, library
+
 **Effort**:
 How much reasoning budget a Zord spends on one invocation.
 _Avoid_: depth, reasoning level
@@ -171,6 +176,7 @@ in conversation, right is what is written in code and in every artifact.
 | papel          | `Role`        |
 | capability     | `Capability`  |
 | harness        | `Harness`     |
+| catálogo       | `Catalog`     |
 | effort         | `Effort`      |
 | combinação     | `Combination` |
 | roster         | `Roster`      |

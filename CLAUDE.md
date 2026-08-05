@@ -238,6 +238,29 @@ Corollary, learned the hard way in review: **do not add a field or an Event vari
 yet update.** An always-zero `spent` is a lie the type system endorses; Task 7 brings the field and
 its accrual together.
 
+### Field-by-field precedence is never written with a spread
+
+`{ ...catalogDefault, ...invocation, ...rosterEntry }` looks like precedence and is not. A spread
+copies a key that is *present with value `undefined`* over the value below it, so a Roster carrying
+`{ model: undefined }` erases the Catalog's model and yields an incomplete Harness. Without
+`exactOptionalPropertyTypes`, the type cannot tell an absent key from a key present as `undefined`,
+so the compiler will not catch it. Resolution walks the fields explicitly and tests `!== undefined`.
+
+Corollary from the same task: **absent falls through, empty is an answer.** `skills: []` in a Roster
+entry means "no Skills" and wins; reading it as "unspecified" would make a deliberate override
+indistinguishable from silence and leave no way to say "none". And `skills` **replace** rather than
+merge — whoever wants the union can write it in the winning source, but nobody could express
+replacement if resolution always merged, and with merge "why does this Zord have this Skill" stops
+having an answer.
+
+### A load-bearing type guarantee breaks its own source when removed
+
+Every falsification in Task 5 produced collateral errors inside `harness.ts` itself — dropping
+`readonly` broke the `Object.freeze` return (`TS2322`), making `catalogDefault` optional produced
+`TS18048`, widening it to `Partial` produced `TS2322` on the indexed access. That is a positive
+signal: the guarantee is structural load, not an annotation the probe merely observes. A probe that
+reports `TS2578` with no collateral damage is worth a second look.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

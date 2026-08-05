@@ -100,3 +100,13 @@ export {
   type RunningMission,
   type UnopenedMission,
 } from "./domain/mission";
+
+export {
+  EFFORTS,
+  InvalidHarnessError,
+  harness,
+  resolveHarness,
+  type Effort,
+  type Harness,
+  type HarnessSources,
+} from "./domain/harness";
