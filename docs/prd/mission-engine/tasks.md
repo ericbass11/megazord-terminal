@@ -58,7 +58,8 @@ Order: dependencies first, and every task leaves the repo green.
 - **Goal**: the Core delegates a slice of the Mission to a Zord with a resolved Harness; the
   Delegation is recorded as an event and is the only thing a Handoff can answer.
 - **Touches**: `engine/domain/mission.ts`, `events.ts`, `commands.ts` and tests
-- **Depends on**: 3
+- **Depends on**: 3, and 5 — a Delegation carries a resolved Harness, so `harness.ts` must exist
+  first. Corrected during Task 3's review; the original list said 3 only.
 - **Verification**: a Delegation produces `Delegated`; a Handoff referencing it is admissible and
   one referencing an unknown Delegation is refused.
 
