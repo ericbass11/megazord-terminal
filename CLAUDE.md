@@ -261,6 +261,75 @@ Every falsification in Task 5 produced collateral errors inside `harness.ts` its
 signal: the guarantee is structural load, not an annotation the probe merely observes. A probe that
 reports `TS2578` with no collateral damage is worth a second look.
 
+### A fact carries the resolved value, never the recipe for it
+
+The `Delegated` Event carries the **resolved** Harness, and `decide` is where `resolveHarness` runs.
+Carrying the three sources instead would have made "what did this Zord run with" a function of the
+Catalog *at reading time*: fold the same log next month against a Catalog whose default model moved
+and the Replay tells a different story, about a bundle nobody ever ran. `evolve` therefore copies the
+bundle out of the Event and never re-resolves — a fold that re-runs a rule is not a fold.
+
+The general form: **anything a rule computes from outside the aggregate is computed once, in `decide`,
+and recorded in the fact.** Task 7 will meet the same choice with a price list.
+
+### `decide` never throws, so a throwing collaborator is wrapped
+
+`resolveHarness` throws `InvalidHarnessError`, and it is reachable from a well-typed Command:
+`catalogDefault` is a complete `Harness` by type and `cli: ""` satisfies that type. So `decide` calls
+it inside `resolvedHarnessOf`, which turns the throw into a Refusal. Two rules came out of that:
+
+- **Catch everything, rethrow nothing.** Rethrowing "unexpected" errors would leave `decide` throwing
+  on a path nobody can enumerate, and "never throws, except" is not a contract a Surface can build on.
+- **A wrong reason on a Refusal is worse than a new reason.** `unrunnable-harness` is a fifth
+  `RefusalReason` the techspec's four did not have. The transition is legal, the Core may delegate, no
+  Contract was broken and the Cap was not reached — reusing `illegal-transition` would have put a lie
+  in front of a human. Adding the member is cheap; the exhaustiveness machinery does the rest.
+
+`missing-capability`, by contrast, was already in the union and had no user: Delegation is its one
+user, because delegating is the Core's own act and `capability.ts` already names the permission.
+
+### "Recorded as open" is the absence of an answer, not a field
+
+A Delegation carries no `status`. A field whose only value is `"open"` is the same lie as an
+always-zero `spent`: the type system endorses it and no rule can move it. Openness is *nothing having
+answered yet*, and the answer is a Handoff (Task 6). The test that guards this asserts the exact key
+set of a recorded Delegation, so adding a field without a rule that fills it in fails.
+
+Same reasoning in the other direction: `evolve` **ignores** a second `Delegated` under an id it
+already holds, the way it keeps the first halt. `decide` refuses the duplicate, but `evolve` is total
+and folds whatever log it is handed, and appending would make the state depend on how many copies of
+a fact the log happened to carry.
+
+### Two Delegations to one Zord are legal; two under one DelegationId are not
+
+The answerable thing is the **Delegation**, not the Zord: a Handoff answers a `DelegationId`. So the
+same Zord may be given two Slices, each with its own resolved Harness — which is how one Slice runs at
+a higher Effort than another, and refusing the repeat would make that unexpressible. Whether the
+runtime reuses a process or births a second Zord is behind `AgentRunner` and is not a Mission rule.
+
+A reused `DelegationId` is refused, because two different facts under one id cannot be folded
+deterministically.
+
+### Role does not constrain a Delegation, and that is not a Gap in this PRD
+
+`Role` is a glossary term with no type in `engine/`: there is no Zord aggregate and no Roster in the
+domain, so a Mission has no way to know the Role of the `ZordId` it is handed. A `role` field on
+`Delegate` that nothing validates against would be exactly the always-zero field this file warns
+about. Role-based permission needs a Zord registry, which is a later PRD — not a later task.
+
+### A reviewer probe that is not typechecked proves nothing
+
+Vitest does not typecheck. A throwaway probe written to audit a delivery can therefore pass a field
+the type does not declare — it is an excess property, silently dropped at runtime — and then "fail"
+for a reason that has nothing to do with the code under review. This happened three times while
+reviewing Task 4: calling `openMission()` with no argument when it takes fields, and passing a
+`core` on a `Delegate` command that carries none, which made a real and working capability check
+look absent.
+
+So a reviewer probe is only evidence once `npx tsc --noEmit` is clean **with the probe still in the
+tree**. Delete it after, not before. And when a probe contradicts a Handoff, suspect the probe first:
+the executor ran the real suite, the reviewer just wrote fresh code.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

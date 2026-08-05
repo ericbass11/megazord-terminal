@@ -54,7 +54,7 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 4 — Delegation
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: the Core delegates a slice of the Mission to a Zord with a resolved Harness; the
   Delegation is recorded as an event and is the only thing a Handoff can answer.
 - **Touches**: `engine/domain/mission.ts`, `events.ts`, `commands.ts` and tests

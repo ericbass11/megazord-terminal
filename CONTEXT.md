@@ -32,6 +32,11 @@ _Avoid_: maestro, master, coordinator, lead agent, conductor
 The assignment of a slice of a Mission to a Zord, performed by the Core.
 _Avoid_: handout, dispatch, assignment
 
+**Slice**:
+The portion of a Mission's outcome that one Delegation hands to a Zord. States the end of that
+portion, not the steps.
+_Avoid_: subtask, chunk, piece, ticket
+
 ## Decision flow
 
 **Command**:
@@ -169,6 +174,7 @@ in conversation, right is what is written in code and in every artifact.
 | modo           | `Mode`        |
 | núcleo         | `Core`        |
 | delegação      | `Delegation`  |
+| fatia          | `Slice`       |
 | comando        | `Command`     |
 | evento         | `Event`       |
 | decisão        | `Decision`    |

@@ -17,17 +17,17 @@
  * - `MissionKilled` is produced by a Gate decision (Task 8).
  *
  * The lifecycle folds them today because a state machine that cannot represent a halted Mission
- * cannot refuse anything on one, and refusing on one is what this task delivers. `Delegated`
- * likewise carries no Harness: resolving a Harness is Task 5 and the Delegation rules are Task 4.
+ * cannot refuse anything on one, and refusing on one is what the lifecycle task delivered.
  */
 
 import type { DelegationId, MissionId, ZordId } from "./ids";
 import type { Money } from "./money";
 import type { Core } from "./capability";
+import type { Harness } from "./harness";
 // Type-only import. It is erased at compile time, so `mission.ts` importing this file back is not a
 // module cycle at runtime: the Mission vocabulary belongs to the aggregate, and a fact is written in
 // that vocabulary.
-import type { Briefing, Delivery, Halt, Mode } from "./mission";
+import type { Briefing, Delivery, Halt, Mode, Slice } from "./mission";
 
 declare const brand: unique symbol;
 
@@ -108,16 +108,23 @@ export type MissionOpened = EventOf & {
 };
 
 /**
- * A slice of the Mission was assigned to a Zord.
+ * A Slice of the Mission was assigned to a Zord, with the Harness it runs under.
  *
- * The payload is the identity of the Delegation and nothing else. Task 4 adds the slice and the
- * resolved Harness; this task needs the fact to exist so a Handoff can be checked against the
- * Delegations that were actually made.
+ * The `harness` is the **resolved** bundle, not the sources it came from, and that is what makes this
+ * fact a fact. A Replay has to be able to answer "what did this Zord actually run with", and an Event
+ * carrying sources could only answer it by re-resolving them against a Catalog that has moved on —
+ * producing a bundle nobody ever ran and calling it history. `decide` resolves once, here it is
+ * recorded, and `evolve` copies it.
+ *
+ * Both fields are required. A `Delegated` that does not say which Slice was assigned, or under which
+ * bundle, is not a fact anybody can act on.
  */
 export type Delegated = EventOf & {
   readonly kind: "delegated";
   readonly delegationId: DelegationId;
   readonly zordId: ZordId;
+  readonly slice: Slice;
+  readonly harness: Harness;
 };
 
 /** The Mission stopped and is waiting for a human. Produced by Task 7 (Cap) and Task 8 (Gate). */

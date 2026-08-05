@@ -75,6 +75,7 @@ export type {
 
 export {
   InvalidBriefingError,
+  InvalidSliceError,
   MODES,
   REFUSAL_REASONS,
   UNOPENED_MISSION,
@@ -83,6 +84,7 @@ export {
   evolve,
   isOpened,
   openMission,
+  slice,
   type Briefing,
   type Decision,
   type Delegation,
@@ -98,6 +100,7 @@ export {
   type Refusal,
   type RefusalReason,
   type RunningMission,
+  type Slice,
   type UnopenedMission,
 } from "./domain/mission";
 

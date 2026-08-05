@@ -83,7 +83,7 @@ type Decision =
   | { readonly kind: "refused"; readonly refusal: Refusal };
 
 type Refusal = {
-  readonly reason: RefusalReason;      // "illegal-transition" | "contract-violation" | "cap-reached" | "missing-capability"
+  readonly reason: RefusalReason;      // "illegal-transition" | "contract-violation" | "cap-reached" | "missing-capability" | "unrunnable-harness"
   readonly violations: readonly string[];  // human-readable, one per broken rule
 };
 
@@ -152,6 +152,14 @@ All three of hard-to-reverse, surprising-without-context and real-trade-off:
 3. **One bounded context now, with Orchestration / Execution / Agreement / Governance recorded as
    candidates.** The explicit *no* matters more than the yes.
 4. **Money is integer BRL cents.** Cheap to record, expensive to discover the hard way.
+5. **A Delegation's Harness is resolved inside `decide`, and the Event carries the resolved bundle**
+   rather than the sources. Added during Task 4: carrying sources would make "what did this Zord run
+   with" a function of the Catalog *at reading time*, so folding the same log after a Catalog change
+   would describe a bundle nobody ever ran.
+
+`RefusalReason` carries a fifth member, `unrunnable-harness`, added in Task 4 and accepted in
+review: the transition is legal, the Core may delegate, no Contract was broken and the Cap was not
+reached, so every existing reason would have put a wrong reason in front of a human.
 
 `engine/` living inside the site project and Vitest as the runner are both easy to reverse — no
 ADR.

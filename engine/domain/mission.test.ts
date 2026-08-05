@@ -10,11 +10,13 @@ import {
   type MissionKilled,
   type MissionOpened,
 } from "@engine/domain/events";
+import { harness, type Harness, type HarnessSources } from "@engine/domain/harness";
 import { delegationId, gateId, missionId, zordId } from "@engine/domain/ids";
 import { moneyFromDecimal } from "@engine/domain/money";
-import type { MissionCommand, OpenMissionFields } from "@engine/domain/commands";
+import type { Delegate, MissionCommand, OpenMissionFields } from "@engine/domain/commands";
 import {
   InvalidBriefingError,
+  InvalidSliceError,
   MODES,
   REFUSAL_REASONS,
   UNOPENED_MISSION,
@@ -24,7 +26,9 @@ import {
   exhausted,
   isOpened,
   openMission,
+  slice,
   type Decision,
+  type Delegation,
   type Halt,
   type HaltedMission,
   type Mission,
@@ -39,6 +43,10 @@ const GATE = gateId("gate-1");
 const DELEGATION = delegationId("delegation-1");
 const OTHER_DELEGATION = delegationId("delegation-2");
 const SCOUT = zordId("zord-scout");
+const BUILDER = zordId("zord-builder");
+
+const SLICE = slice("Map the Surfaces the Cockpit needs and report the Contract of each");
+const OTHER_SLICE = slice("Build the Pane grid against that Contract");
 
 /** The Core that leads every Mission in this file: orchestrating capabilities only, by construction. */
 const LEADING_CORE = core([
@@ -46,6 +54,30 @@ const LEADING_CORE = core([
   orchestrationCapability("chase"),
   orchestrationCapability("consolidate"),
 ]);
+
+/* The three Harness sources, as `harness.test.ts` names them. A Delegation resolves one bundle out of
+ * them, and `decide` is what applies the precedence. */
+
+const CATALOG_DEFAULT: Harness = harness({
+  cli: "claude",
+  model: "sonnet-4-5",
+  effort: "medium",
+  skills: ["catalog-baseline"],
+});
+
+const SOURCES: HarnessSources = {
+  rosterEntry: { effort: "max" },
+  invocation: { model: "opus-4-1", skills: ["scout-the-repo"] },
+  catalogDefault: CATALOG_DEFAULT,
+};
+
+/** What `SOURCES` must resolve to: Effort from the Roster, model and Skills from the invocation. */
+const RESOLVED_HARNESS: Harness = harness({
+  cli: "claude",
+  model: "opus-4-1",
+  effort: "max",
+  skills: ["scout-the-repo"],
+});
 
 function opening(overrides: Partial<OpenMissionFields> = {}): OpenMissionFields {
   return {
@@ -92,13 +124,16 @@ function killed(reason = "the Briefing was wrong"): MissionKilled {
   return { kind: "mission-killed", missionId: missionId("mission-1"), occurredAt: LATER, reason };
 }
 
-function delegated(id = DELEGATION): Delegated {
+function delegated(id = DELEGATION, overrides: Partial<Delegated> = {}): Delegated {
   return {
     kind: "delegated",
     missionId: missionId("mission-1"),
     occurredAt: LATER,
     delegationId: id,
     zordId: SCOUT,
+    slice: SLICE,
+    harness: RESOLVED_HARNESS,
+    ...overrides,
   };
 }
 
@@ -129,12 +164,19 @@ const deliverCommand: MissionCommand = {
   occurredAt: LATER,
   delivery: { summary: "Cockpit shipped", artifacts: ["cockpit.tsx"] },
 };
-const delegateCommand: MissionCommand = {
-  kind: "delegate",
-  occurredAt: LATER,
-  delegationId: DELEGATION,
-  zordId: SCOUT,
-};
+function delegating(overrides: Partial<Delegate> = {}): Delegate {
+  return {
+    kind: "delegate",
+    occurredAt: LATER,
+    delegationId: DELEGATION,
+    zordId: SCOUT,
+    slice: SLICE,
+    harnessSources: SOURCES,
+    ...overrides,
+  };
+}
+
+const delegateCommand: MissionCommand = delegating();
 const submitHandoffCommand: MissionCommand = {
   kind: "submit-handoff",
   occurredAt: LATER,
@@ -296,12 +338,241 @@ describe("delivering a Mission", () => {
 });
 
 /**
+ * Delegation: the Core assigns a Slice of the Mission to a Zord, with a resolved Harness.
+ *
+ * The Harness is resolved **inside** `decide`, so the fact carries the bundle and a Replay can say
+ * what the Zord ran with without re-deriving it against a Catalog that has moved on.
+ */
+describe("delegating a Slice of a Mission", () => {
+  /** The one Delegation a Mission holds, failing loudly when it holds none or more than one. */
+  function soleDelegation(state: Mission): Delegation {
+    if (!isOpened(state) || state.delegations.length !== 1) {
+      throw new Error(
+        `expected exactly one Delegation, got ${isOpened(state) ? state.delegations.length : "an unopened Mission"}`,
+      );
+    }
+    return state.delegations[0];
+  }
+
+  it("produces one Delegated fact, carrying the Slice and the resolved Harness", () => {
+    const events = eventsOf(decide(running(), delegateCommand));
+
+    expect(events).toEqual([
+      {
+        kind: "delegated",
+        missionId: "mission-1",
+        occurredAt: LATER,
+        delegationId: DELEGATION,
+        zordId: SCOUT,
+        slice: SLICE,
+        harness: RESOLVED_HARNESS,
+      },
+    ]);
+  });
+
+  it("resolves the Harness by precedence rather than copying a source", () => {
+    const [event] = eventsOf(decide(running(), delegateCommand));
+
+    if (event?.kind !== "delegated") {
+      throw new Error(`expected a Delegated fact, got ${event?.kind}`);
+    }
+    // Roster > invocation > catalog default, field by field — and none of the three sources on its
+    // own has this shape, which is what proves the resolution happened here.
+    expect(event.harness).toEqual({
+      cli: "claude",
+      model: "opus-4-1",
+      effort: "max",
+      skills: ["scout-the-repo"],
+    });
+    expect(event.harness).not.toEqual(CATALOG_DEFAULT);
+  });
+
+  it("records the Delegation on the state, resolved bundle and all", () => {
+    const delegation = soleDelegation(apply(running(), decide(running(), delegateCommand)));
+
+    expect(delegation).toEqual({
+      id: DELEGATION,
+      zordId: SCOUT,
+      slice: SLICE,
+      harness: RESOLVED_HARNESS,
+      delegatedAt: LATER,
+    });
+  });
+
+  it("hands over a Harness nobody can rewrite afterwards", () => {
+    const delegation = soleDelegation(apply(running(), decide(running(), delegateCommand)));
+
+    // `harness()` freezes what it returns, so "which bundle did this Zord run with" keeps its answer.
+    expect(Object.isFrozen(delegation.harness)).toBe(true);
+    expect(Object.isFrozen(delegation.harness.skills)).toBe(true);
+  });
+
+  it("records the Delegation as open, which is the absence of an answer and not a field", () => {
+    const delegation = soleDelegation(apply(running(), decide(running(), delegateCommand)));
+
+    // A `status: "open"` that no rule can ever move would be a lie the type system endorses. Task 6
+    // brings the answer — a Handoff — and the settlement together. Pinned so adding a field to
+    // `Delegation` without a rule that fills it in fails here.
+    expect(Object.keys(delegation).sort()).toEqual([
+      "delegatedAt",
+      "harness",
+      "id",
+      "slice",
+      "zordId",
+    ]);
+  });
+
+  it("makes the Delegation the one thing a Handoff can answer", () => {
+    const state = apply(running(), decide(running(), delegateCommand));
+
+    // Still refused — the Contract validation is Task 6 — but no longer for being unknown.
+    const known = refusalOf(decide(state, submitHandoffCommand));
+    expect(known.violations.join(" ")).not.toMatch(/never made in this Mission/);
+
+    const unknown = refusalOf(
+      decide(state, { kind: "submit-handoff", occurredAt: LATER, delegationId: OTHER_DELEGATION }),
+    );
+    expect(unknown.violations).toEqual([
+      'Delegation "delegation-2" was never made in this Mission, so there is nothing to hand off',
+    ]);
+  });
+
+  /**
+   * Judgement call: **delegating twice to the same Zord in one Mission is legal.**
+   *
+   * A ZordId names who is being given work, not one invocation of it, and a Mission legitimately
+   * gives the same builder two independent Slices. Nothing in the domain makes it illegal either: what
+   * a Handoff answers is a DelegationId, so two Delegations to one Zord fold and settle perfectly well
+   * as long as their ids differ. Each carries its own resolved Harness, so the second Slice can be run
+   * at a higher Effort than the first — refusing the repeat would make that unexpressible. Whether the
+   * runtime reuses a process or is born again is behind `AgentRunner` and is not a Mission rule.
+   */
+  it("lets the Core delegate twice to the same Zord, each Slice with its own Harness", () => {
+    const first = apply(running(), decide(running(), delegating()));
+    const second = apply(
+      first,
+      decide(
+        first,
+        delegating({
+          delegationId: OTHER_DELEGATION,
+          slice: OTHER_SLICE,
+          harnessSources: { rosterEntry: { effort: "min" }, catalogDefault: CATALOG_DEFAULT },
+        }),
+      ),
+    );
+
+    if (!isOpened(second)) {
+      throw new Error("expected an opened Mission");
+    }
+    expect(second.delegations.map((delegation) => delegation.zordId)).toEqual([SCOUT, SCOUT]);
+    expect(second.delegations.map((delegation) => delegation.slice)).toEqual([SLICE, OTHER_SLICE]);
+    expect(second.delegations.map((delegation) => delegation.harness.effort)).toEqual(["max", "min"]);
+  });
+
+  it("refuses a DelegationId this Mission has already used", () => {
+    const state = apply(running(), decide(running(), delegateCommand));
+
+    const refusal = refusalOf(decide(state, delegating({ zordId: BUILDER, slice: OTHER_SLICE })));
+
+    expect(refusal.reason).toBe("illegal-transition");
+    expect(refusal.violations).toEqual([
+      'Delegation "delegation-1" was already made in this Mission, ' +
+        "and a Mission makes each one once",
+    ]);
+  });
+
+  it("reports both the state and the used id when a Command breaks both", () => {
+    const stopped = evolve(
+      apply(running(), decide(running(), delegateCommand)),
+      halted({ reason: "cap-reached" }),
+    );
+
+    const refusal = refusalOf(decide(stopped, delegateCommand));
+
+    expect(refusal.reason).toBe("illegal-transition");
+    expect(refusal.violations).toHaveLength(2);
+    expect(refusal.violations[0]).toMatch(/admits no Delegation/);
+    expect(refusal.violations[1]).toMatch(/was already made in this Mission/);
+  });
+
+  /**
+   * Judgement call: **the Core must hold the `delegate` Capability.** Delegating is the Core's own
+   * act, `capability.ts` already names the permission, and `missing-capability` is in the Refusal
+   * union for exactly this — nothing else in the PRD would ever use it.
+   */
+  it("refuses a Core that holds no delegate Capability", () => {
+    const chaserOnly = openMission(
+      opening({ core: core([orchestrationCapability("chase")]) }),
+    );
+
+    const refusal = refusalOf(decide(chaserOnly, delegateCommand));
+
+    expect(refusal.reason).toBe("missing-capability");
+    expect(refusal.violations).toEqual([
+      'the Core of this Mission holds no "delegate" capability, ' +
+        'so Zord "zord-scout" cannot be given a Delegation',
+    ]);
+  });
+
+  /**
+   * The type level is not enough here either: `catalogDefault` is a complete `Harness` by type, and
+   * `cli: ""` satisfies that type while naming no CLI. `resolveHarness` throws on it, and `decide` is
+   * contractually non-throwing — so the throw becomes the Refusal it should have been.
+   */
+  it("refuses an unrunnable Harness instead of throwing", () => {
+    const unrunnable: Delegate = delegating({
+      harnessSources: {
+        catalogDefault: { cli: "", model: "sonnet-4-5", effort: "medium", skills: [] },
+      },
+    });
+
+    expect(() => decide(running(), unrunnable)).not.toThrow();
+
+    const refusal = refusalOf(decide(running(), unrunnable));
+
+    expect(refusal.reason).toBe("unrunnable-harness");
+    expect(refusal.violations.join(" ")).toMatch(/cli must name something/);
+  });
+
+  it("refuses a Harness that is unrunnable only after the sources are combined", () => {
+    // Each source is fine on its own; the resolved bundle lists a Skill twice.
+    const refusal = refusalOf(
+      decide(
+        running(),
+        delegating({
+          harnessSources: {
+            invocation: { skills: ["scout-the-repo", "scout-the-repo"] },
+            catalogDefault: CATALOG_DEFAULT,
+          },
+        }),
+      ),
+    );
+
+    expect(refusal.reason).toBe("unrunnable-harness");
+    expect(refusal.violations.join(" ")).toMatch(/must list each Skill once/);
+  });
+
+  it("never mutates the Harness sources it was handed", () => {
+    const before = structuredClone(SOURCES);
+
+    decide(running(), delegateCommand);
+
+    expect(SOURCES).toEqual(before);
+  });
+
+  it("refuses a Slice that says nothing", () => {
+    expect(() => slice("")).toThrow(InvalidSliceError);
+    expect(() => slice("   ")).toThrow(/must describe the portion assigned to a Zord/);
+  });
+});
+
+/**
  * Criterion 12. The three refusals this task must prove, each in the state it is specified for.
  *
- * Note what these prove and what they do not: the accept path of `delegate`, `submit-handoff` and
- * `decide-gate` belongs to Tasks 4, 6 and 8, so today those Commands are refused from every state.
- * The assertions below pin the *specific* violation each illegal state produces, which is what a
- * later task must keep producing once it adds its accept path.
+ * Note what these prove and what they do not: `delegate` now has an accept path, so its refusals below
+ * are the real thing; `submit-handoff` and `decide-gate` are still refused from every state, because
+ * their accept paths belong to Tasks 6 and 8. The assertions pin the *specific* violation each illegal
+ * state produces, which is what a later task must keep producing once it adds its accept path.
  */
 describe("illegal transitions", () => {
   it("refuses a Delegation on a halted Mission", () => {
@@ -483,9 +754,23 @@ describe("evolve", () => {
       throw new Error("expected an opened Mission");
     }
     expect(withTwo.delegations).toEqual([
-      { id: DELEGATION, zordId: SCOUT, delegatedAt: LATER },
-      { id: OTHER_DELEGATION, zordId: SCOUT, delegatedAt: LATER },
+      { id: DELEGATION, zordId: SCOUT, slice: SLICE, harness: RESOLVED_HARNESS, delegatedAt: LATER },
+      {
+        id: OTHER_DELEGATION,
+        zordId: SCOUT,
+        slice: SLICE,
+        harness: RESOLVED_HARNESS,
+        delegatedAt: LATER,
+      },
     ]);
+  });
+
+  it("keeps the first Delegation when a duplicated fact arrives, so the fold is deterministic", () => {
+    const once = evolve(running(), delegated(DELEGATION));
+    const twice = evolve(once, delegated(DELEGATION, { slice: OTHER_SLICE, zordId: BUILDER }));
+
+    // Same object back: nothing was appended and nothing was overwritten.
+    expect(twice).toBe(once);
   });
 
   it("carries the Delegations of a Mission into every later state", () => {
@@ -641,6 +926,64 @@ describe("what the type system refuses", () => {
       });
 
     expect(refusalOf(rejected()).violations.join(" ")).toMatch(/does not recognise/);
+  });
+
+  it("refuses a raw string where a Slice is required", () => {
+    const rejected = (): Delegate =>
+      delegating({
+        // @ts-expect-error an unchecked string is not a Slice: it may say nothing at all
+        slice: "Map the Surfaces",
+      });
+
+    // The type error is the proof; the call still runs, because the brand is erased at runtime.
+    expect(rejected().slice).toBe("Map the Surfaces");
+  });
+
+  it("refuses a Delegated fact that does not say what the Zord ran with", () => {
+    const rejected = (): Delegated => ({
+      kind: "delegated",
+      missionId: missionId("mission-1"),
+      occurredAt: LATER,
+      delegationId: DELEGATION,
+      zordId: SCOUT,
+      slice: SLICE,
+      // @ts-expect-error a Delegated fact always carries the resolved Harness: a Replay depends on it
+      harness: undefined,
+    });
+
+    expect(rejected().kind).toBe("delegated");
+  });
+
+  it("refuses a Delegate Command that carries no Harness sources to resolve", () => {
+    const rejected = (): Delegate => {
+      // @ts-expect-error a Delegation resolves a Harness, so the Command must say what to resolve from
+      const command: Delegate = {
+        kind: "delegate",
+        occurredAt: LATER,
+        delegationId: DELEGATION,
+        zordId: SCOUT,
+        slice: SLICE,
+      };
+      return command;
+    };
+
+    expect(rejected().kind).toBe("delegate");
+  });
+
+  it("refuses rewriting the Harness a Delegation was made with", () => {
+    const state = apply(running(), decide(running(), delegateCommand));
+    if (!isOpened(state)) {
+      throw new Error("expected an opened Mission");
+    }
+    const delegation: Delegation = state.delegations[0];
+
+    // Assigning the value the field already holds, so `readonly` is the only thing that can reject it.
+    // @ts-expect-error what a Zord ran with is a fact: it is recorded once and never rewritten
+    const rejected = (): void => void (delegation.harness = delegation.harness);
+
+    // No runtime claim beyond the type: the Delegation record itself is not frozen, only the bundle
+    // inside it is — see the freezing test above.
+    expect(rejected).not.toThrow();
   });
 
   it("keeps the exhaustiveness check accepting nothing but a narrowed-away value", () => {
