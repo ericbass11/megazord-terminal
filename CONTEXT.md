@@ -32,6 +32,20 @@ _Avoid_: maestro, master, coordinator, lead agent, conductor
 The assignment of a slice of a Mission to a Zord, performed by the Core.
 _Avoid_: handout, dispatch, assignment
 
+## Decision flow
+
+**Command**:
+An intent submitted to a Mission, which the domain accepts or refuses.
+_Avoid_: action, directive
+
+**Event**:
+A fact that happened to a Mission. Append-only, never revised.
+_Avoid_: notification, signal
+
+**Decision**:
+The result of deciding a Command: the accepted Events, or a Refusal.
+_Avoid_: ruling, judgement
+
 ## Team
 
 **Zord**:
@@ -150,6 +164,9 @@ in conversation, right is what is written in code and in every artifact.
 | modo           | `Mode`        |
 | núcleo         | `Core`        |
 | delegação      | `Delegation`  |
+| comando        | `Command`     |
+| evento         | `Event`       |
+| decisão        | `Decision`    |
 | zord           | `Zord`        |
 | papel          | `Role`        |
 | capability     | `Capability`  |

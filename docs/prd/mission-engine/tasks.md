@@ -43,7 +43,7 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 3 — Mission state machine: decide, evolve, events, commands
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: the Mission lifecycle as `decide`/`evolve`, with the Event and Command unions, opening
   a Mission from a Briefing with a Mode and a Cap, and refusal of illegal transitions.
 - **Touches**: `engine/domain/events.ts`, `commands.ts`, `mission.ts` and tests

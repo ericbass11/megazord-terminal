@@ -154,6 +154,90 @@ in `mission.ts` would split the invariant across two places and one of them woul
 `core()` is where the two layers meet: the parameter type refuses an `ExecutionCapability` at
 compile time, and `assertNoExecution` refuses one that was forced through a cast at runtime.
 
+### The lifecycle skeleton, and what it deliberately refuses
+
+`decide` and `evolve` live in `engine/domain/mission.ts`, with the Mission vocabulary — `Briefing`,
+`Mode`, `Delegation`, `Delivery`, `Halt`, the state union, `Refusal`, `Decision`. The Event and
+Command unions live in `events.ts` and `commands.ts` and import those types back **with `import
+type`**: erased at compile time, so there is no module cycle at runtime and the vocabulary stays with
+the aggregate it describes.
+
+Three deviations from the techspec, made on purpose:
+
+- **`Refusal` and `Decision` are in `mission.ts`, not `handoff.ts`.** They are the return type of
+  `decide`, which Task 3 needs and Task 6 does not: `validateHandoff` returns `readonly string[]`.
+  Putting them in `handoff.ts` would have made `mission.ts ↔ handoff.ts` a two-way dependency for no
+  gain.
+- **The unions are `MissionEvent` and `MissionCommand`, not `Event` and `Command`.** `Event` is a
+  global in the `dom` lib this project compiles against; a domain type shadowing it is a permanent
+  trap at every import site. The glossary terms stay `Event` and `Command` in prose.
+- **`Instant` (branded UTC ISO-8601) lives in `events.ts`.** The techspec's file list has no home for
+  time. A fact happens at an Instant, so it lives with the facts, and Commands import the type.
+
+A Command whose rule cluster belongs to a later task is **refused, never guessed**. `delegate`,
+`submit-handoff` and `decide-gate` exist in the union today with their state guards implemented and
+their accept path replaced by `unmodelled()`, which refuses with `illegal-transition` — truthfully,
+because the machine has no such transition yet. Task 4, 6 and 8 each replace one `unmodelled` call
+with their accept path and change nothing else. The same rule kept `spent` off the state and
+`cost-accrued` out of the Event union: an always-zero field no rule updates is a lie, so Task 7 adds
+the field and the accrual together.
+
+### Type-level probes have three ways of proving nothing
+
+Found while falsifying Task 3's probes, each one a probe that passed for the wrong reason:
+
+- **Excess-property checking against a union accepts a property any member declares.** `{ reason:
+  "cap-reached", gateId }` compiles against `{reason:"cap-reached"} | {reason:"gate-open"; gateId}`.
+  The exclusion has to be written down — `gateId?: never` on the member that must not carry one.
+- **A `const` annotated with a union but initialised from a known member is narrowed to that
+  member.** `const state: Mission = running()` silently kills a probe about the union; launder the
+  value through a function whose *return type* is the union.
+- **A mutation probe must assign the value the field already holds.** `state.status = "killed"` fails
+  on the literal type as well as on `readonly`, so removing `readonly` leaves it failing and the
+  probe never reports `TS2578`. `state.status = "unopened"` isolates the guarantee. At runtime a
+  frozen object throws `TypeError` even for a same-value write.
+
+### Exhaustiveness is a `never` parameter that does not throw
+
+`exhausted(value: never): void` in `mission.ts` is the whole enforcement: leave a member of
+`MissionEvent` or `MissionCommand` unhandled and the `default` branch still holds it, so the call
+stops compiling (`TS2345: Argument of type … is not assignable to parameter of type 'never'`). It
+returns `void` and each caller returns its own safe answer, because `decide` and `evolve` are
+contractually non-throwing — an `assertNever` that throws would trade a compile-time guarantee for a
+production crash. Falsify it by widening the parameter to `unknown`: the probe in `mission.test.ts`
+reports `TS2578`.
+
+### The adherence check has three exemptions, not one
+
+Mapped while reviewing Task 3, so Task 10 does not discover it by failing:
+
+1. **A word that is itself a glossary term is never a violation.** `Delivery` is a defined term and
+   also sits in `_Avoid_` of **Handoff**. `type Delivery` is correct code; a naive scan reproves it.
+2. **Process vocabulary is not domain naming.** `task`, `review`, `context`, `document`, `log` and
+   `result` all appear in some `_Avoid_` list, and all six are unavoidable in this repo's own
+   process: `tasks.md`, `/executar-review`, `CONTEXT.md`. The `_Avoid_` list governs how the
+   **domain** is named, not how the flow talks about itself.
+3. **Fenced code blocks and the glossary file itself are out of scope**, as already recorded above.
+
+### Domain unions are prefixed when the bare name is a DOM global
+
+`Event` and `Command` are the glossary terms, and the code uses `MissionEvent` and `MissionCommand`.
+Reason: `Event` is a global type from the `dom` lib this project loads, and a domain type shadowing
+it is a permanent trap — the shadow only bites in files that also touch the DOM. The prose keeps the
+glossary terms; the identifier carries the aggregate prefix.
+
+### Commands whose rules belong to a later task refuse, they do not pretend
+
+Task 3 needed `delegate`, `submit-handoff` and `decide-gate` to exist for its illegal-transition
+proofs, while their accept paths belong to Tasks 4, 6 and 8. The pattern used: implement the state
+guard, and route the accept path to `unmodelled()`, which refuses with `illegal-transition`. The
+machine genuinely does not have the transition yet, instead of having a stub that fakes success.
+Each owning task replaces exactly one `unmodelled` call.
+
+Corollary, learned the hard way in review: **do not add a field or an Event variant a rule does not
+yet update.** An always-zero `spent` is a lie the type system endorses; Task 7 brings the field and
+its accrual together.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without
