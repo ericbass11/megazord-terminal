@@ -1,132 +1,170 @@
 # Megazord Terminal
 
-Um ADE — Agentic Development Environment: um ambiente cujo propósito é coordenar um time de
-agentes de IA que escreve, testa e entrega, em vez de editar arquivos.
+An ADE — Agentic Development Environment: an environment whose purpose is to coordinate a team
+of AI agents that writes, tests and delivers, instead of editing files.
 
-Este documento é **só glossário**. Nada de decisão de implementação, nada de spec.
+This document is **glossary only**. No implementation details, no specs.
 
-## Comando
+Prose and identifiers here are English. The team speaks Brazilian Portuguese, so every term
+carries its PT-BR spoken form — see [Spoken form](#spoken-form) for the full mapping. The
+English term is the one that appears in code.
 
-**Missão**:
-Unidade de trabalho isolada, com escopo, modo, orçamento e critério de pronto próprios. Todo
-trabalho acontece dentro de uma.
-_Avoid_: task, job, sessão, conversa
+## Command
+
+**Mission**:
+An isolated unit of work with its own scope, mode, budget and definition of done. All work
+happens inside one.
+_Avoid_: task, job, session, conversation
 
 **Briefing**:
-A descrição do resultado esperado que abre uma missão. Descreve o fim, não os passos.
-_Avoid_: prompt, pedido, input, requisito
+The description of the expected outcome that opens a Mission. States the end, not the steps.
+_Avoid_: prompt, request, input, requirement
 
-**Modo**:
-Quem lidera a missão e quanta autonomia existe — Livre, Combinação ou Agêntico.
-_Avoid_: tipo, perfil, nível
+**Mode**:
+Who leads a Mission and how much autonomy exists — Free, Combination or Agentic.
+_Avoid_: type, profile, level
 
-**Núcleo**:
-O orquestrador de uma missão. Delega, cobra e consolida, e não possui ferramenta de execução.
-_Avoid_: maestro, master, coordenador, agente principal
+**Core**:
+The orchestrator of a Mission. Delegates, chases and consolidates, and owns no execution tool.
+_Avoid_: maestro, master, coordinator, lead agent, conductor
 
-**Delegação**:
-A atribuição de um pedaço da missão a um zord, feita pelo Núcleo.
-_Avoid_: distribuição, repasse
+**Delegation**:
+The assignment of a slice of a Mission to a Zord, performed by the Core.
+_Avoid_: handout, dispatch, assignment
 
-## Time
+## Team
 
 **Zord**:
-Agente executor, definido pela composição CLI + modelo + skills + effort. Nasce quando é
-invocado e morre depois de entregar.
-_Avoid_: agente (sozinho), bot, worker, subagente
+An executing agent, defined by the composition CLI + model + skills + effort. Born when
+invoked, dies after delivering.
+_Avoid_: agent, bot, worker, subagent
 
-**Papel**:
-A função canônica de um zord — scout, builder, reviewer ou controller. Determina permissão,
-não apenas nome.
-_Avoid_: cargo, tipo de agente, função
+**Role**:
+The canonical function of a Zord — scout, builder, reviewer or controller. Determines
+permission, not just naming.
+_Avoid_: position, kind, function
 
 **Harness**:
-O pacote resolvido de CLI, modelo, effort e skills com que um zord roda uma tarefa específica.
-_Avoid_: config, setup, preset, perfil
+The resolved bundle of CLI, model, effort and skills a Zord runs a given task with.
+_Avoid_: config, setup, preset, profile
 
 **Effort**:
-Quanto esforço de raciocínio um zord gasta numa invocação.
-_Avoid_: profundidade, nível de esforço
+How much reasoning budget a Zord spends on one invocation.
+_Avoid_: depth, reasoning level
 
-**Combinação**:
-Formação nomeada de zords, com roster, gates e entregável declarados.
-_Avoid_: squad, time, equipe, formação
+**Combination**:
+A named formation of Zords, with a declared Roster, Gates and deliverable.
+_Avoid_: squad, team, crew, formation
 
 **Roster**:
-A lista de papéis de uma combinação, com o harness de cada papel.
-_Avoid_: elenco, escalação, lista de agentes
+The list of Roles in a Combination, with the Harness of each Role.
+_Avoid_: lineup, cast, agent list
 
 **Skill**:
-Bloco de instrução instalável que especializa um zord sem alterar código.
-_Avoid_: prompt, regra, instrução, documento
+An installable instruction block that specialises a Zord without changing code.
+_Avoid_: prompt, rule, instruction, document
 
-## Acordo e entrega
+## Agreement and delivery
 
-**Contrato**:
-A interface acordada entre zords antes de existir código, e a referência contra a qual uma
-entrega é aceita ou recusada.
-_Avoid_: spec, interface, acordo, schema
+**Contract**:
+The interface agreed between Zords before code exists, and the reference a delivery is accepted
+or refused against.
+_Avoid_: spec, interface, agreement, schema
 
 **Handoff**:
-A entrega estruturada de um zord: escopo, artefatos, contrato de referência e lacunas
-declaradas.
-_Avoid_: entrega, output, resultado, PR
+The structured delivery of a Zord: scope, artifacts, reference Contract and declared Gaps.
+_Avoid_: delivery, output, result, PR
 
-**Lacuna**:
-O que um handoff declara explicitamente não ter coberto.
-_Avoid_: pendência, débito, TODO
+**Gap**:
+What a Handoff explicitly declares it did not cover.
+_Avoid_: pending, debt, TODO
 
-**Recusa**:
-A rejeição de um handoff por violar o contrato, feita pelo Núcleo sem intervenção humana.
-_Avoid_: reprovação, rejeição, bloqueio
+**Refusal**:
+The rejection of a Handoff for violating its Contract, performed by the Core with no human
+involvement.
+_Avoid_: rejection, reproval, block
 
 **Gate**:
-Checkpoint em que a missão para e espera decisão humana.
-_Avoid_: aprovação, checkpoint, review, validação
+A checkpoint where the Mission stops and waits for a human decision.
+_Avoid_: approval, checkpoint, review, validation
 
-**Entrega**:
-O resultado consolidado de uma missão, com prova de que funciona.
-_Avoid_: deploy, release, produto
+**Delivery**:
+The consolidated outcome of a Mission, with proof that it works.
+_Avoid_: deploy, release, product
 
-## Contexto compartilhado
+## Shared context
 
 **Workspace**:
-O projeto onde as missões acontecem, e o escopo de compartilhamento do Córtex.
-_Avoid_: repo, pasta, projeto, diretório
+The project where Missions happen, and the sharing scope of the Cortex.
+_Avoid_: repo, folder, project, directory
 
-**Córtex**:
-A memória de fatos compartilhada por todos os zords de um workspace, que sobrevive ao fim da
-sessão.
-_Avoid_: memória, cache, histórico, contexto
+**Cortex**:
+The fact memory shared by every Zord of a Workspace, which outlives the session.
+_Avoid_: memory, cache, history, context
 
-**Fato**:
-Uma entrada do Córtex, atribuída a quem gravou e à missão de origem.
-_Avoid_: nota, log, aprendizado, lembrança
+**Fact**:
+One Cortex entry, attributed to who wrote it and to the Mission it came from.
+_Avoid_: note, log, learning, memory
 
-## Execução visível
+## Visible execution
 
 **Pane**:
-Terminal isolado com um zord dentro, visível no cockpit.
-_Avoid_: janela, aba, terminal, célula
+An isolated terminal with one Zord inside, visible in the Cockpit.
+_Avoid_: window, tab, terminal, cell
 
 **Cockpit**:
-A grade de panes de uma missão.
-_Avoid_: dashboard, tela, grid, painel
+The Pane grid of a Mission.
+_Avoid_: dashboard, screen, grid, panel
 
-**Superfície**:
-Uma área do produto que resolve um problema de coordenação de time.
-_Avoid_: feature, módulo, página, tela
+**Surface**:
+An area of the product that solves one team-coordination problem.
+_Avoid_: feature, module, page, screen
 
-## Governança
+## Governance
 
-**Medidor**:
-A contabilidade ao vivo de token e custo, por pane, por missão e por combinação.
-_Avoid_: billing, dashboard de custo, contador
+**Meter**:
+The live accounting of tokens and cost, per Pane, per Mission and per Combination.
+_Avoid_: billing, cost dashboard, counter
 
-**Teto**:
-O limite de gasto de uma missão. Ao ser atingido, a missão para e pede autorização.
-_Avoid_: budget, limite, quota, orçamento
+**Cap**:
+The spending limit of a Mission. Once reached, the Mission stops and asks for authorisation.
+_Avoid_: budget, limit, quota
 
 **Replay**:
-A sequência auditável de eventos de uma missão, incluindo o que foi recusado.
-_Avoid_: log, histórico, trace, auditoria
+The auditable event sequence of a Mission, including what was refused.
+_Avoid_: log, history, trace, audit
+
+## Spoken form
+
+The team speaks PT-BR and the code is English. This table is the bridge: left is what is said
+in conversation, right is what is written in code and in every artifact.
+
+| Spoken (PT-BR) | Written (EN)  |
+| -------------- | ------------- |
+| missão         | `Mission`     |
+| briefing       | `Briefing`    |
+| modo           | `Mode`        |
+| núcleo         | `Core`        |
+| delegação      | `Delegation`  |
+| zord           | `Zord`        |
+| papel          | `Role`        |
+| harness        | `Harness`     |
+| effort         | `Effort`      |
+| combinação     | `Combination` |
+| roster         | `Roster`      |
+| skill          | `Skill`       |
+| contrato       | `Contract`    |
+| handoff        | `Handoff`     |
+| lacuna         | `Gap`         |
+| recusa         | `Refusal`     |
+| gate           | `Gate`        |
+| entrega        | `Delivery`    |
+| workspace      | `Workspace`   |
+| córtex         | `Cortex`      |
+| fato           | `Fact`        |
+| pane           | `Pane`        |
+| cockpit        | `Cockpit`     |
+| superfície     | `Surface`     |
+| medidor        | `Meter`       |
+| teto           | `Cap`         |
+| replay         | `Replay`      |
