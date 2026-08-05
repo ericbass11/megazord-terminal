@@ -22,10 +22,10 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 1 — Test runner and engine scaffolding
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: `npm test` runs Vitest against `engine/`, `@engine/*` resolves, `npm run build` for the
   site still passes.
-- **Touches**: `package.json`, `tsconfig.json`, `vitest.config.ts`, `engine/index.ts`, `engine/domain/ids.ts`
+- **Touches**: `package.json`, `tsconfig.json`, `vitest.config.mts`, `engine/index.ts`, `engine/domain/ids.ts`
 - **Depends on**: none
 - **Verification**: `npm test` green with one real test (a branded id rejects a raw string at type
   level); `npm run build` green.
@@ -122,6 +122,8 @@ Order: dependencies first, and every task leaves the repo green.
 - **Touches**: `tools/glossary-check.ts` and test, `tools/prd-structure.test.ts`, `CONTEXT.md`,
   `CLAUDE.md`, `docs/adr/0001..0004`
 - **Depends on**: 9
-- **Verification**: criterion 8 — an `_Avoid_` term planted in a fixture fails the check, and the
-  glossary file itself is excluded from scanning; criterion 9 — a PRD folder missing `techspec.md`
+- **Verification**: criterion 8 — an `_Avoid_` term planted in a fixture fails the check; the
+  glossary file itself, fenced code blocks and the structural vocabulary listed in `CLAUDE.md`
+  ("Glossary checks are about naming") are excluded, proven by a test that the current tree passes
+  clean; criterion 9 — a PRD folder missing `techspec.md`
   fails; criterion 10 — no `any` and no stray `@ts-expect-error` in `engine/`.

@@ -20,8 +20,9 @@ rules it discovers here, so this file gets sharper with each round.
 scratch space.
 
 - Use the English term from `CONTEXT.md` for every domain concept.
-- Never use a term listed under `_Avoid_`. `Squad` is not a Combination; `agent` is not a Zord;
-  `memory` is not the Cortex.
+- Never use a term listed under `_Avoid_` **to name a domain concept**. `Squad` is not a
+  Combination; `agent` is not a Zord; `memory` is not the Cortex. The same word may be perfectly
+  correct as ordinary technical vocabulary — see "Glossary checks are about naming" below.
 - Found a new domain term, or a term that conflicts with the glossary? Resolve it and write it
   into `CONTEXT.md` **immediately** — not at the end of the task. Batching glossary updates is
   how the model drifts from the code.
@@ -99,6 +100,49 @@ PRD slugs are kebab-case English. The folder name is what `/executar-task <folde
   quietly implemented.
 - **Report failures faithfully.** If a check fails, say so with the output. If a step was
   skipped, say that.
+
+## Rules learned while building
+
+Appended by each task, so the next one does not rediscover them.
+
+### Glossary checks are about naming, not banned words
+
+An `_Avoid_` entry in `CONTEXT.md` means **"do not use this word to name this concept"** — it is
+not a banned-word list. Twelve of the current `_Avoid_` terms are ordinary technical vocabulary or
+TypeScript keywords: `type`, `interface`, `function`, `kind`, `input`, `output`, `result`, `module`,
+`context`, `level`, `log`, `block`. `interface AgentRunner` and `kind: "accepted"` are both correct
+code and both would trip a naive scan — the techspec itself uses them 13 times.
+
+So the adherence check (Task 10) scans:
+
+- **exported domain symbol names** in `engine/domain/` — the names that claim to *be* a concept;
+- **PRD and techspec prose**, excluding fenced code blocks and excluding `CONTEXT.md` itself.
+
+It never scans raw code tokens. A check that fails on `export type` is a check nobody will keep.
+
+### Type-level guarantees must be falsified, not asserted
+
+A passing test suite proves nothing about a compile-time guarantee: `@ts-expect-error` passes just
+as happily when the error it expects has disappeared. Every type-level proof is verified by
+**temporarily breaking it** and confirming `tsc --noEmit` reports `TS2578: Unused
+'@ts-expect-error' directive`, then restoring. If the guarantee stops holding, `npm run build`
+must fail — a comment is not enforcement.
+
+### Vitest boundaries
+
+- The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without
+  `"type": "module"`, Vite's loader warns on every run. `.mts` fixes it without making the whole
+  root package ESM, which would put the Next config files at risk.
+- `test.include` is scoped to `engine/**` and `tools/**`. The site is verified by `npm run build`
+  and is never pulled into a Vitest run.
+- `vitest.config.mts` is listed explicitly in `tsconfig.json` `include`, because `**/*.ts` does not
+  match `.mts`.
+
+### Known broken, pre-existing
+
+`npm run lint` does not work: `next lint` is deprecated in Next 15 and the repo has no ESLint
+config, so it drops into an interactive prompt and exits 1. It predates this flow. The repo
+therefore has **no working linter**, which matters whenever a review step wants one.
 
 ## Current state of the repo
 
