@@ -75,7 +75,7 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 6 — Contract, Handoff, Refusal
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: `validateHandoff` implementing the required/optional/Gap rule; a violating Handoff is
   refused by the domain with the violations listed, no human involved.
 - **Touches**: `engine/domain/contract.ts`, `handoff.ts`, `mission.ts` and tests
@@ -107,7 +107,12 @@ Order: dependencies first, and every task leaves the repo green.
 
 - **Status**: todo
 - **Goal**: `replay(events)` folds to the same state built command by command; the `AgentRunner`
-  port with a deterministic fake drives a whole Mission from Briefing to Delivery.
+  port with a deterministic fake drives a whole Mission from Briefing to Delivery. **Inherited from
+  Task 6**: acceptance criterion 7 names *refusal* among what the Replay must contain, and a refused
+  Decision currently emits no Event. Task 9 owns that decision and must resolve it one of the two
+  ways documented in `decideSubmitHandoff` — widen `Decision`'s refused member to carry facts, or
+  build the Replay from Decisions rather than Events — never by adding an Event that `evolve`
+  ignores.
 - **Touches**: `engine/domain/replay.ts`, `engine/ports/agent-runner.ts`,
   `engine/adapters/fake-agent-runner.ts`, `engine/index.ts` and tests
 - **Depends on**: 6, 7, 8

@@ -219,6 +219,18 @@ Mapped while reviewing Task 3, so Task 10 does not discover it by failing:
    **domain** is named, not how the flow talks about itself.
 3. **Fenced code blocks and the glossary file itself are out of scope**, as already recorded above.
 
+Two live examples Task 10 will meet, found while adding `Clause` in Task 6:
+
+- `techspec.md` defines `Clause` as "One **requirement** of a Contract", and `requirement` is an
+  `_Avoid_` term under **Briefing** — it was already one before `Clause` existed, so this is a
+  pre-existing hit in PRD-folder prose, not something Task 6 introduced. Whoever writes the check
+  decides whether to exempt the line or reword the techspec; it cannot be edited from inside a task
+  whose scope is the engine.
+- `validateHandoff` is the name the techspec pins, and **Gate** lists `validation` under `_Avoid_`. It
+  is not a violation: the function names a judgement of a Handoff, not a Gate. A stem-based scan would
+  flag it; a substring scan does not, because `validateHandoff` does not contain `validation`. Do not
+  make the scan smarter than the rule.
+
 ### Domain unions are prefixed when the bare name is a DOM global
 
 `Event` and `Command` are the glossary terms, and the code uses `MissionEvent` and `MissionCommand`.
@@ -329,6 +341,86 @@ look absent.
 So a reviewer probe is only evidence once `npx tsc --noEmit` is clean **with the probe still in the
 tree**. Delete it after, not before. And when a probe contradicts a Handoff, suspect the probe first:
 the executor ran the real suite, the reviewer just wrote fresh code.
+
+### The Contract lives on the Delegation, and that is a rule about time
+
+A Handoff is judged against the Contract that was in force **when the Delegation was made**, so the
+Contract is recorded in the `Delegated` fact and copied onto the `Delegation`. The two alternatives both
+break the same way, in opposite directions: on the **Mission**, a Clause added after a Delegation was
+made would reach back and fail a Zord that never saw it, and one Mission would hold one standard for
+every Slice; on the **Handoff**, the party being judged would choose the standard it is judged by. This
+is the Task 4 rule ("a fact carries the resolved value, never the recipe for it") applied to an
+agreement instead of a bundle — and it is why `evolve` records the accepted Handoff without re-running
+`validateHandoff`. A fold that re-judges is not a fold: tighten the rule next month and the same log
+would tell a different story.
+
+### Absence is the settlement, and a Gap must name its Clause
+
+Two shapes that came out of Task 6, both of them "do not add a field a rule cannot fill":
+
+- A `Delegation` carries an **optional `handoff`**, present exactly when one was accepted. A
+  discriminated union of `OpenDelegation | AnsweredDelegation` was rejected because the only honest
+  discriminant is the `status` field Task 4 refused to carry; a pair of optionals (`handoff` plus
+  `settledAt`) was rejected because half of it can be present and mean nothing. The Instant lives on
+  the Event; the state keeps what a rule reads.
+- A `Gap` carries a **required `clauseId`**. A Gap with no Clause attached would excuse every optional
+  Clause in the Contract at once — one "ran out of time" and the whole optional half of the agreement
+  passes — so the declaration would carry no information at all. Required at the type level, which
+  makes "a Gap about nothing" unrepresentable rather than merely refused.
+
+And the reverse of the excuse rule, which is the promise itself: a Gap on a **required** Clause is
+worth nothing. Declaring that you did not do the job does not make the job done, and a model where a
+Gap excused anything would let every Handoff pass by declaring everything.
+
+### A Refusal is a return value, so a refused attempt is not in the log
+
+`Decision` says `refused` carries a Refusal and no Events, and criterion 3 requires the Refusal to *be*
+the return value of `decide` — that is precisely what makes "no human involved" a property of the shape.
+So a refused Handoff produces no fact, and it settles nothing: the Delegation stays open and the Zord
+resubmits. Closing it on a Refusal would make automatic refusal **more** expensive than a human review,
+because the only recovery would be a new Delegation under a new id.
+
+The glossary says a Replay includes what was refused, and that is **not** delivered by Task 6 and is
+not half-built either. Recording a `handoff-refused` Event that `evolve` ignores and nothing projects
+is the same lie as an always-zero `spent`. Task 9 owns `replay.ts` and is the first reader such a fact
+would have; two additive shapes are open to it — let the `refused` member of `Decision` carry facts as
+well, or build the Replay from the sequence of Decisions rather than from the Event log.
+
+### `decide` never throws: dereferencing a field is different from copying one
+
+Task 3's and Task 4's Commands survive a cast-forced missing field by accident — they *copy* it onto
+an Event, so `delivery: undefined` produces a useless fact instead of an exception. `submit-handoff` is
+the first Command that **reads through** its required field (`command.handoff.delegationId`), so it
+reads it as `unknown` first and refuses when it is not an object. The standard for the wrapper around a
+throwing collaborator is different, and worth keeping straight:
+
+- `resolvedHarnessOf` wraps `resolveHarness` because the throw is reachable from a **well-typed**
+  Command (`cli: ""` satisfies `Harness`).
+- `contractViolationsOf` wraps `validateHandoff` because a Contract can arrive through a cast or a
+  deserialiser, which is the same threat model `assertNoExecution` and `harness()` exist for.
+
+`decide` does **not** re-check a Contract when a Delegation is made. A Contract is a value object with
+its own constructor, checked where it is built, exactly like a `Briefing`, a `Slice` or a `Money` cap.
+A Harness is the one thing `decide` validates, and only because `decide` is what resolves it.
+
+### Falsifying a probe that guards an *absence* produces no collateral, by construction
+
+Of Task 6's twelve falsifications, eight broke something inside the source as well as reporting
+`TS2578`; four reported `TS2578` alone, and in each case that is the correct signal rather than a weak
+probe:
+
+- `SubmitHandoff` carries **no** `delegationId` — nothing in the source can depend on a field that is
+  not there, so adding one back breaks nothing but the probe.
+- `readonly handoff` on `Delegation` and `readonly required` on `Clause` — nothing in the source
+  mutates them (`evolve` builds a new object), which is the point; both probes pair the type claim with
+  a runtime `Object.freeze` assertion, and the freeze is what actually stops a write.
+- `Clause.required` being non-optional — `clause()` reads it as `unknown` and refuses a non-boolean at
+  runtime, so widening the type moves the enforcement rather than removing it. The runtime half has its
+  own test.
+
+So the rule from Task 5 stands, with a rider: no collateral damage is worth a second look, and the
+answer is either "the guarantee is the absence of something" or "the runtime half is carrying the load,
+and it is tested".
 
 ### Vitest boundaries
 

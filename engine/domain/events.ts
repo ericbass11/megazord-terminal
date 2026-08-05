@@ -24,6 +24,8 @@ import type { DelegationId, MissionId, ZordId } from "./ids";
 import type { Money } from "./money";
 import type { Core } from "./capability";
 import type { Harness } from "./harness";
+import type { Contract } from "./contract";
+import type { Handoff } from "./handoff";
 // Type-only import. It is erased at compile time, so `mission.ts` importing this file back is not a
 // module cycle at runtime: the Mission vocabulary belongs to the aggregate, and a fact is written in
 // that vocabulary.
@@ -116,8 +118,15 @@ export type MissionOpened = EventOf & {
  * producing a bundle nobody ever ran and calling it history. `decide` resolves once, here it is
  * recorded, and `evolve` copies it.
  *
- * Both fields are required. A `Delegated` that does not say which Slice was assigned, or under which
- * bundle, is not a fact anybody can act on.
+ * The `contract` is here for exactly the same reason, and it is the one place it can be. A Handoff is
+ * accepted or refused against the Contract that was **in force when the Delegation was made**. Left
+ * anywhere else, the judgement would move: a Contract read from a Mission-level field at submit time
+ * would let a Clause added after the fact retroactively fail a Zord, and a Contract carried on the
+ * Handoff itself would let the party being judged choose the standard. Recorded here, folding the log
+ * next month judges nothing again — `decide` already judged, once, against this.
+ *
+ * Every field is required. A `Delegated` that does not say which Slice was assigned, under which
+ * bundle, or against which Contract, is not a fact anybody can act on.
  */
 export type Delegated = EventOf & {
   readonly kind: "delegated";
@@ -125,6 +134,25 @@ export type Delegated = EventOf & {
   readonly zordId: ZordId;
   readonly slice: Slice;
   readonly harness: Harness;
+  readonly contract: Contract;
+};
+
+/**
+ * A Handoff answered a Delegation, and the Core accepted it against its Contract.
+ *
+ * Only the **acceptance** is a fact here. A Handoff that violated its Contract is refused as the
+ * return value of `decide` and produces no Event: the Delegation stays open, the Zord fixes and
+ * resubmits, and no human is involved at any point. What that costs the Replay — which the glossary
+ * says includes what was refused — is stated in `mission.ts` under `decideSubmitHandoff` and is Task
+ * 9's decision, because Task 9 owns the Replay and is the first reader such a fact would have.
+ *
+ * It carries the whole Handoff rather than a summary, because "what did this Zord claim, and what did
+ * it admit it left out" is precisely what a Replay is asked months later.
+ */
+export type HandoffAccepted = EventOf & {
+  readonly kind: "handoff-accepted";
+  readonly delegationId: DelegationId;
+  readonly handoff: Handoff;
 };
 
 /** The Mission stopped and is waiting for a human. Produced by Task 7 (Cap) and Task 8 (Gate). */
@@ -154,6 +182,7 @@ export type MissionKilled = EventOf & {
 export type MissionEvent =
   | MissionOpened
   | Delegated
+  | HandoffAccepted
   | MissionHalted
   | MissionDelivered
   | MissionKilled;

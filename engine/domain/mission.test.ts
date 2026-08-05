@@ -4,6 +4,7 @@ import { core, orchestrationCapability } from "@engine/domain/capability";
 import {
   instant,
   type Delegated,
+  type HandoffAccepted,
   type MissionDelivered,
   type MissionEvent,
   type MissionHalted,
@@ -11,9 +12,16 @@ import {
   type MissionOpened,
 } from "@engine/domain/events";
 import { harness, type Harness, type HarnessSources } from "@engine/domain/harness";
-import { delegationId, gateId, missionId, zordId } from "@engine/domain/ids";
+import { clauseId, delegationId, gateId, missionId, zordId } from "@engine/domain/ids";
 import { moneyFromDecimal } from "@engine/domain/money";
-import type { Delegate, MissionCommand, OpenMissionFields } from "@engine/domain/commands";
+import { clause, contract, type Contract } from "@engine/domain/contract";
+import { gap, handoff, type Handoff } from "@engine/domain/handoff";
+import type {
+  Delegate,
+  MissionCommand,
+  OpenMissionFields,
+  SubmitHandoff,
+} from "@engine/domain/commands";
 import {
   InvalidBriefingError,
   InvalidSliceError,
@@ -24,6 +32,7 @@ import {
   decide,
   evolve,
   exhausted,
+  isOpenDelegation,
   isOpened,
   openMission,
   slice,
@@ -32,6 +41,7 @@ import {
   type Halt,
   type HaltedMission,
   type Mission,
+  type OpenedMission,
   type Refusal,
   type RunningMission,
 } from "@engine/domain/mission";
@@ -78,6 +88,37 @@ const RESOLVED_HARNESS: Harness = harness({
   effort: "max",
   skills: ["scout-the-repo"],
 });
+
+/* The Contract every Delegation in this file is made against, and the Handoff that honours it. Two
+ * required Clauses and one optional, which is the smallest Contract that can tell the required rule and
+ * the optional rule apart. `contract.test.ts` proves the rule itself; here it is the Contract that
+ * `decide` judges against, recorded on the Delegation when the Delegation was made. */
+
+const RENDERS = clauseId("clause-renders");
+const TESTED = clauseId("clause-tested");
+const NOTES = clauseId("clause-notes");
+
+const REFERENCE_CONTRACT: Contract = contract([
+  clause({ id: RENDERS, description: "The Cockpit renders one Pane per Zord", required: true }),
+  clause({ id: TESTED, description: "Every Pane has a test", required: true }),
+  clause({ id: NOTES, description: "The Surfaces it touched are listed", required: false }),
+]);
+
+/** Satisfies both required Clauses and declares the optional one as a Gap: valid. */
+const HONOURING_HANDOFF: Handoff = handoff({
+  delegationId: DELEGATION,
+  satisfies: [RENDERS, TESTED],
+  gaps: [gap(NOTES, "the Surfaces are still moving, so listing them would mislead")],
+  artifacts: ["cockpit.tsx", "cockpit.test.tsx"],
+});
+
+function handingOff(overrides: Partial<Handoff> = {}): Handoff {
+  return handoff({ ...HONOURING_HANDOFF, ...overrides });
+}
+
+function submitting(answer: Handoff = HONOURING_HANDOFF): SubmitHandoff {
+  return { kind: "submit-handoff", occurredAt: LATER, handoff: answer };
+}
 
 function opening(overrides: Partial<OpenMissionFields> = {}): OpenMissionFields {
   return {
@@ -133,7 +174,18 @@ function delegated(id = DELEGATION, overrides: Partial<Delegated> = {}): Delegat
     zordId: SCOUT,
     slice: SLICE,
     harness: RESOLVED_HARNESS,
+    contract: REFERENCE_CONTRACT,
     ...overrides,
+  };
+}
+
+function handoffAccepted(id = DELEGATION, answer: Handoff = HONOURING_HANDOFF): HandoffAccepted {
+  return {
+    kind: "handoff-accepted",
+    missionId: missionId("mission-1"),
+    occurredAt: LATER,
+    delegationId: id,
+    handoff: answer,
   };
 }
 
@@ -172,16 +224,13 @@ function delegating(overrides: Partial<Delegate> = {}): Delegate {
     zordId: SCOUT,
     slice: SLICE,
     harnessSources: SOURCES,
+    contract: REFERENCE_CONTRACT,
     ...overrides,
   };
 }
 
 const delegateCommand: MissionCommand = delegating();
-const submitHandoffCommand: MissionCommand = {
-  kind: "submit-handoff",
-  occurredAt: LATER,
-  delegationId: DELEGATION,
-};
+const submitHandoffCommand: MissionCommand = submitting();
 const decideGateCommand: MissionCommand = { kind: "decide-gate", occurredAt: LATER, gateId: GATE };
 
 const EVERY_COMMAND: readonly MissionCommand[] = [
@@ -195,6 +244,7 @@ const EVERY_COMMAND: readonly MissionCommand[] = [
 const EVERY_EVENT: readonly MissionEvent[] = [
   opened(),
   delegated(),
+  handoffAccepted(),
   halted({ reason: "cap-reached" }),
   halted({ reason: "gate-open", gateId: GATE }),
   killed(),
@@ -215,6 +265,17 @@ function everyState(): ReadonlyArray<readonly [string, Mission]> {
 /** A Mission in some state, as a caller who has not narrowed it yet holds one. */
 function whicheverState(): Mission {
   return running();
+}
+
+/** A running Mission whose one Delegation was answered by an accepted Handoff. */
+function withDelegationSettled(): OpenedMission {
+  const open = apply(running(), decide(running(), delegateCommand));
+  const settled = apply(open, decide(open, submitHandoffCommand));
+
+  if (!isOpened(settled)) {
+    throw new Error(`expected an opened Mission, got ${settled.status}`);
+  }
+  return settled;
 }
 
 function expectStatus(state: Mission, status: Mission["status"]): Mission {
@@ -366,6 +427,7 @@ describe("delegating a Slice of a Mission", () => {
         zordId: SCOUT,
         slice: SLICE,
         harness: RESOLVED_HARNESS,
+        contract: REFERENCE_CONTRACT,
       },
     ]);
   });
@@ -395,6 +457,7 @@ describe("delegating a Slice of a Mission", () => {
       zordId: SCOUT,
       slice: SLICE,
       harness: RESOLVED_HARNESS,
+      contract: REFERENCE_CONTRACT,
       delegatedAt: LATER,
     });
   });
@@ -407,30 +470,52 @@ describe("delegating a Slice of a Mission", () => {
     expect(Object.isFrozen(delegation.harness.skills)).toBe(true);
   });
 
+  /**
+   * Task 4 pinned this key set so that adding a field to `Delegation` without a rule that fills it in
+   * would fail here. Task 6 updated it deliberately, and it adds exactly two keys, each with a rule:
+   *
+   * - `contract` is written by the Delegation rule, from the `Delegated` fact;
+   * - `handoff` is written by the Handoff rule, and **only** when a Handoff was accepted — which is why
+   *   it is absent here. Openness is still the absence of an answer, not a `status: "open"` nobody can
+   *   move.
+   */
   it("records the Delegation as open, which is the absence of an answer and not a field", () => {
     const delegation = soleDelegation(apply(running(), decide(running(), delegateCommand)));
 
-    // A `status: "open"` that no rule can ever move would be a lie the type system endorses. Task 6
-    // brings the answer — a Handoff — and the settlement together. Pinned so adding a field to
-    // `Delegation` without a rule that fills it in fails here.
     expect(Object.keys(delegation).sort()).toEqual([
+      "contract",
       "delegatedAt",
       "harness",
       "id",
       "slice",
       "zordId",
     ]);
+    expect(Object.keys(delegation)).not.toContain("handoff");
+    expect(isOpenDelegation(delegation)).toBe(true);
+  });
+
+  it("records the Contract the Delegation is answerable against, as agreed when it was made", () => {
+    const delegation = soleDelegation(apply(running(), decide(running(), delegateCommand)));
+
+    // The fact carries the Contract, so folding the log later judges nothing again: a Clause added to
+    // some other Contract afterwards cannot reach back and fail this Zord.
+    expect(delegation.contract).toEqual(REFERENCE_CONTRACT);
+    expect(delegation.contract.clauses.map((agreed) => agreed.id)).toEqual([
+      RENDERS,
+      TESTED,
+      NOTES,
+    ]);
   });
 
   it("makes the Delegation the one thing a Handoff can answer", () => {
     const state = apply(running(), decide(running(), delegateCommand));
 
-    // Still refused — the Contract validation is Task 6 — but no longer for being unknown.
-    const known = refusalOf(decide(state, submitHandoffCommand));
-    expect(known.violations.join(" ")).not.toMatch(/never made in this Mission/);
+    // A Handoff for the Delegation that was made is now judged against its Contract, and this one
+    // honours it.
+    expect(eventsOf(decide(state, submitHandoffCommand))).toHaveLength(1);
 
     const unknown = refusalOf(
-      decide(state, { kind: "submit-handoff", occurredAt: LATER, delegationId: OTHER_DELEGATION }),
+      decide(state, submitting(handingOff({ delegationId: OTHER_DELEGATION }))),
     );
     expect(unknown.violations).toEqual([
       'Delegation "delegation-2" was never made in this Mission, so there is nothing to hand off',
@@ -567,6 +652,346 @@ describe("delegating a Slice of a Mission", () => {
 });
 
 /**
+ * Criterion 3, at the `decide` level: a Handoff that violates its Contract is refused by the domain
+ * with the violations listed, and **no human is involved** — `decide` is a pure function with no way to
+ * ask anybody anything, so the Refusal is an ordinary return value.
+ *
+ * `contract.test.ts` proves the required/optional/Gap rule itself. This block proves the rule is wired
+ * into the lifecycle: which Contract is consulted, what the acceptance does to the state, and what a
+ * Refusal deliberately does not do.
+ */
+describe("answering a Delegation with a Handoff", () => {
+  /** A running Mission with `DELEGATION` open against `REFERENCE_CONTRACT`. */
+  function withDelegation(): Mission {
+    return apply(running(), decide(running(), delegateCommand));
+  }
+
+  function delegationOf(state: Mission, id = DELEGATION): Delegation {
+    if (!isOpened(state)) {
+      throw new Error("expected an opened Mission");
+    }
+    const found = state.delegations.find((delegation) => delegation.id === id);
+    if (found === undefined) {
+      throw new Error(`expected a Delegation "${id}", got ${state.delegations.length}`);
+    }
+    return found;
+  }
+
+  it("accepts a Handoff that honours its Contract, as one fact carrying the whole claim", () => {
+    const events = eventsOf(decide(withDelegation(), submitHandoffCommand));
+
+    expect(events).toEqual([
+      {
+        kind: "handoff-accepted",
+        missionId: "mission-1",
+        occurredAt: LATER,
+        delegationId: DELEGATION,
+        handoff: HONOURING_HANDOFF,
+      },
+    ]);
+  });
+
+  it("settles the Delegation it answered, and leaves every other one alone", () => {
+    const state = withDelegation();
+    const withTwo = apply(
+      state,
+      decide(state, delegating({ delegationId: OTHER_DELEGATION, slice: OTHER_SLICE })),
+    );
+
+    const settled = apply(withTwo, decide(withTwo, submitHandoffCommand));
+
+    expect(isOpenDelegation(delegationOf(settled))).toBe(false);
+    expect(delegationOf(settled).handoff).toEqual(HONOURING_HANDOFF);
+    expect(isOpenDelegation(delegationOf(settled, OTHER_DELEGATION))).toBe(true);
+  });
+
+  /** The headline of the whole PRD: a required Clause is not excusable, and the Refusal says so. */
+  it("refuses a Handoff that left a required Clause unsatisfied, with no human input", () => {
+    const state = withDelegation();
+    const missingRequired = submitting(handingOff({ satisfies: [RENDERS] }));
+
+    const decision = decide(state, missingRequired);
+
+    // A Refusal is a return value: synchronous, pure, nothing to await and nobody to ask.
+    expect(decision.kind).toBe("refused");
+    const refusal = refusalOf(decision);
+    expect(refusal.reason).toBe("contract-violation");
+    expect(refusal.violations).toEqual([
+      'Clause "clause-tested" ("Every Pane has a test") is required and was not satisfied',
+    ]);
+  });
+
+  it("refuses a required Clause declared as a Gap, and quotes the excuse it refused", () => {
+    const state = withDelegation();
+    const excused = submitting(
+      handingOff({
+        satisfies: [RENDERS],
+        gaps: [
+          gap(TESTED, "no test harness was available"),
+          gap(NOTES, "the Surfaces are still moving"),
+        ],
+      }),
+    );
+
+    const refusal = refusalOf(decide(state, excused));
+
+    expect(refusal.reason).toBe("contract-violation");
+    expect(refusal.violations).toEqual([
+      'Clause "clause-tested" ("Every Pane has a test") is required, so declaring it as a Gap does ' +
+        'not excuse it: "no test harness was available"',
+    ]);
+  });
+
+  it("accepts an optional Clause left unsatisfied only when it is declared as a Gap", () => {
+    const state = withDelegation();
+
+    // Declared: accepted. This is `HONOURING_HANDOFF`, restated for the contrast below.
+    expect(eventsOf(decide(state, submitHandoffCommand))).toHaveLength(1);
+
+    const silent = submitting(handingOff({ gaps: [] }));
+    const refusal = refusalOf(decide(state, silent));
+
+    expect(refusal.reason).toBe("contract-violation");
+    expect(refusal.violations).toEqual([
+      'Clause "clause-notes" ("The Surfaces it touched are listed") was not satisfied and was not ' +
+        "declared as a Gap",
+    ]);
+  });
+
+  /**
+   * Judgement call: **a Gap must be about the Clause it excuses.** A Gap that names another Clause is
+   * not a declaration about this one, and if any declared Gap were enough, one Gap would excuse every
+   * optional Clause in the Contract at once — the declaration would carry no information and the rule
+   * would be a loophole. `Gap.clauseId` is required at the type level, so a Gap about nothing cannot
+   * even be constructed; this proves a Gap about *something else* does not carry over.
+   */
+  it("does not let a Gap about one Clause excuse another", () => {
+    const state = withDelegation();
+    const misdirected = submitting(
+      handingOff({ satisfies: [RENDERS, TESTED], gaps: [gap(RENDERS, "was rushed")] }),
+    );
+
+    const refusal = refusalOf(decide(state, misdirected));
+
+    expect(refusal.reason).toBe("contract-violation");
+    // Two things wrong: RENDERS is claimed and excused at once, and NOTES is still undeclared.
+    expect(refusal.violations).toHaveLength(2);
+    expect(refusal.violations[0]).toMatch(/clause-renders.+satisfied and declared as a Gap/);
+    expect(refusal.violations[1]).toMatch(/clause-notes.+was not declared as a Gap/);
+  });
+
+  it("reports every Clause a Handoff broke, not just the first", () => {
+    const state = withDelegation();
+    const empty = submitting(handingOff({ satisfies: [], gaps: [] }));
+
+    const refusal = refusalOf(decide(state, empty));
+
+    expect(refusal.violations).toHaveLength(3);
+    expect(refusal.violations.join(" ")).toMatch(/clause-renders/);
+    expect(refusal.violations.join(" ")).toMatch(/clause-tested/);
+    expect(refusal.violations.join(" ")).toMatch(/clause-notes/);
+  });
+
+  it("changes nothing when it refuses: the Delegation stays open", () => {
+    const state = withDelegation();
+    const before = structuredClone(state);
+
+    const decision = decide(state, submitting(handingOff({ satisfies: [] })));
+
+    expect(decision.kind).toBe("refused");
+    expect(state).toEqual(before);
+    expect(isOpenDelegation(delegationOf(state))).toBe(true);
+  });
+
+  /**
+   * Judgement call: **a refused Handoff can be resubmitted.** A Refusal settles nothing, so the loop is
+   * refuse → fix → resubmit, with no human at any point. Closing the Delegation on a Refusal would make
+   * automatic refusal more expensive than a human review: the only recovery would be a new Delegation
+   * under a new id, and the Replay would then say the first Zord never delivered anything.
+   */
+  it("lets a refused Handoff be corrected and resubmitted", () => {
+    const state = withDelegation();
+
+    expect(refusalOf(decide(state, submitting(handingOff({ satisfies: [RENDERS] })))).reason).toBe(
+      "contract-violation",
+    );
+
+    const settled = apply(state, decide(state, submitHandoffCommand));
+
+    expect(isOpenDelegation(delegationOf(settled))).toBe(false);
+  });
+
+  it("refuses a second Handoff once one was accepted", () => {
+    const state = withDelegation();
+    const settled = apply(state, decide(state, submitHandoffCommand));
+
+    const refusal = refusalOf(
+      decide(settled, submitting(handingOff({ artifacts: ["cockpit.tsx"] }))),
+    );
+
+    expect(refusal.reason).toBe("illegal-transition");
+    expect(refusal.violations).toEqual([
+      'Delegation "delegation-1" was already answered by an accepted Handoff, ' +
+        "and a Delegation is answered once",
+    ]);
+  });
+
+  /**
+   * Where the Contract lives, proven rather than asserted: the same Handoff is accepted against the
+   * Delegation whose Contract makes the Clause optional and refused against the one that requires it.
+   * A Contract carried on the Handoff could not produce that difference — the submitter would be
+   * choosing the standard — and a Contract on the Mission could not either, since one Mission would
+   * then hold one standard for every Slice.
+   */
+  it("judges against the Contract recorded on the Delegation it answers", () => {
+    const strict = contract([
+      clause({ id: RENDERS, description: "The Cockpit renders one Pane per Zord", required: true }),
+      clause({ id: TESTED, description: "Every Pane has a test", required: true }),
+      clause({ id: NOTES, description: "The Surfaces it touched are listed", required: true }),
+    ]);
+    const state = withDelegation();
+    const withStrict = apply(
+      state,
+      decide(
+        state,
+        delegating({
+          delegationId: OTHER_DELEGATION,
+          slice: OTHER_SLICE,
+          contract: strict,
+        }),
+      ),
+    );
+
+    // Same claim, same Gap, two Delegations: the lenient one accepts it.
+    expect(eventsOf(decide(withStrict, submitHandoffCommand))).toHaveLength(1);
+
+    const refusal = refusalOf(
+      decide(withStrict, submitting(handingOff({ delegationId: OTHER_DELEGATION }))),
+    );
+
+    expect(refusal.reason).toBe("contract-violation");
+    expect(refusal.violations.join(" ")).toMatch(
+      /clause-notes.+is required, so declaring it as a Gap does not excuse it/,
+    );
+  });
+
+  it("refuses a Handoff claiming a Clause the Contract does not have", () => {
+    const state = withDelegation();
+    const inventing = submitting(
+      handingOff({ satisfies: [RENDERS, TESTED, clauseId("clause-invented")] }),
+    );
+
+    const refusal = refusalOf(decide(state, inventing));
+
+    expect(refusal.reason).toBe("contract-violation");
+    expect(refusal.violations).toEqual([
+      'Clause "clause-invented" is not part of the Contract this Handoff answers, ' +
+        "so satisfying it means nothing",
+    ]);
+  });
+
+  it("accepts a Handoff against a Contract with no Clauses, because empty is an answer", () => {
+    const state = running();
+    const nothingToHold = apply(
+      state,
+      decide(state, delegating({ contract: contract([]) })),
+    );
+
+    const events = eventsOf(
+      decide(nothingToHold, submitting(handingOff({ satisfies: [], gaps: [] }))),
+    );
+
+    expect(events).toHaveLength(1);
+  });
+
+  /**
+   * `decide` never throws, and a Contract can reach it through a cast or a deserialiser — the same
+   * situation `resolveHarness` is in. So the judgement is wrapped, and an unreadable Contract becomes
+   * the Contract violation it is rather than an exception in the middle of a Replay.
+   */
+  it("refuses instead of throwing when the recorded Contract cannot be read", () => {
+    const state = running();
+    const unreadable = { clauses: [null] } as unknown as Contract;
+    const held = apply(state, decide(state, delegating({ contract: unreadable })));
+
+    expect(() => decide(held, submitHandoffCommand)).not.toThrow();
+
+    const refusal = refusalOf(decide(held, submitHandoffCommand));
+
+    expect(refusal.reason).toBe("contract-violation");
+    expect(refusal.violations.join(" ")).toMatch(
+      /the Contract this Delegation was made against cannot be read/,
+    );
+  });
+
+  it("refuses instead of throwing when the Command carries no Handoff at all", () => {
+    const empty = { kind: "submit-handoff", occurredAt: LATER } as unknown as SubmitHandoff;
+
+    expect(() => decide(withDelegation(), empty)).not.toThrow();
+
+    const refusal = refusalOf(decide(withDelegation(), empty));
+
+    expect(refusal.reason).toBe("illegal-transition");
+    expect(refusal.violations).toEqual([
+      "a Handoff is what a submit-handoff Command submits, and this one carries none",
+    ]);
+  });
+
+  it("never asks and never throws, whatever Handoff lands on whatever state", () => {
+    const claims: readonly Handoff[] = [
+      HONOURING_HANDOFF,
+      handingOff({ satisfies: [] }),
+      handingOff({ gaps: [] }),
+      handingOff({ delegationId: OTHER_DELEGATION }),
+    ];
+
+    for (const [label, state] of everyState()) {
+      for (const claim of claims) {
+        const decision = decide(state, submitting(claim));
+
+        expect(() => decide(state, submitting(claim)), label).not.toThrow();
+        if (decision.kind === "refused") {
+          expect(REFUSAL_REASONS, label).toContain(decision.refusal.reason);
+          expect(decision.refusal.violations.length, label).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  describe("folding the acceptance", () => {
+    it("settles the Delegation the fact names, without re-judging the Handoff", () => {
+      const state = evolve(running(), delegated(DELEGATION));
+      const settled = evolve(state, handoffAccepted(DELEGATION, handingOff({ satisfies: [] })));
+
+      // `evolve` records what the fact says. It does not re-run `validateHandoff`: a fold that re-runs
+      // a rule is not a fold, and a rule tightened later would rewrite history.
+      expect(delegationOf(settled).handoff?.satisfies).toEqual([]);
+    });
+
+    it("ignores a second acceptance, so the fold does not depend on duplicated facts", () => {
+      const once = evolve(evolve(running(), delegated(DELEGATION)), handoffAccepted());
+      const twice = evolve(once, handoffAccepted(DELEGATION, handingOff({ artifacts: ["other.ts"] })));
+
+      expect(twice).toBe(once);
+    });
+
+    it("ignores an acceptance for a Delegation the Mission never made", () => {
+      const state = evolve(running(), delegated(DELEGATION));
+
+      expect(evolve(state, handoffAccepted(OTHER_DELEGATION))).toBe(state);
+    });
+
+    it("carries the settled Delegation into every later state", () => {
+      const settled = evolve(evolve(running(), delegated(DELEGATION)), handoffAccepted());
+
+      for (const event of [halted({ reason: "cap-reached" }), killed(), delivered()]) {
+        expect(isOpenDelegation(delegationOf(evolve(settled, event))), event.kind).toBe(false);
+      }
+    });
+  });
+});
+
+/**
  * Criterion 12. The three refusals this task must prove, each in the state it is specified for.
  *
  * Note what these prove and what they do not: `delegate` now has an accept path, so its refusals below
@@ -606,11 +1031,9 @@ describe("illegal transitions", () => {
 
   it("refuses a Handoff for a Delegation that was never made", () => {
     const withOneDelegation = evolve(running(), delegated(DELEGATION));
-    const forAnother: MissionCommand = {
-      kind: "submit-handoff",
-      occurredAt: LATER,
-      delegationId: OTHER_DELEGATION,
-    };
+    const forAnother: MissionCommand = submitting(
+      handingOff({ delegationId: OTHER_DELEGATION }),
+    );
 
     const refusal = refusalOf(decide(withOneDelegation, forAnother));
 
@@ -620,14 +1043,13 @@ describe("illegal transitions", () => {
     ]);
   });
 
-  it("does not refuse a known Delegation for being unknown", () => {
+  it("accepts a known Delegation's Handoff, so the refusal above is about the Delegation", () => {
     const withOneDelegation = evolve(running(), delegated(DELEGATION));
 
-    const refusal = refusalOf(decide(withOneDelegation, submitHandoffCommand));
-
-    // Still refused — the Contract validation is Task 6 — but not for the reason above.
-    expect(refusal.violations.join(" ")).not.toMatch(/never made in this Mission/);
-    expect(refusal.violations.join(" ")).toMatch(/no "submit-handoff" transition in this engine yet/);
+    // Task 3 asserted a Refusal here, because `submit-handoff` had no transition yet. Task 6 gives it
+    // one: the Contract is honoured, so it is accepted. The refusal above is now provably about the
+    // Delegation being unknown, and not about a rule that does not exist.
+    expect(eventsOf(decide(withOneDelegation, submitHandoffCommand))).toHaveLength(1);
   });
 
   it("reports every rule a Handoff broke, not just the first", () => {
@@ -754,12 +1176,20 @@ describe("evolve", () => {
       throw new Error("expected an opened Mission");
     }
     expect(withTwo.delegations).toEqual([
-      { id: DELEGATION, zordId: SCOUT, slice: SLICE, harness: RESOLVED_HARNESS, delegatedAt: LATER },
+      {
+        id: DELEGATION,
+        zordId: SCOUT,
+        slice: SLICE,
+        harness: RESOLVED_HARNESS,
+        contract: REFERENCE_CONTRACT,
+        delegatedAt: LATER,
+      },
       {
         id: OTHER_DELEGATION,
         zordId: SCOUT,
         slice: SLICE,
         harness: RESOLVED_HARNESS,
+        contract: REFERENCE_CONTRACT,
         delegatedAt: LATER,
       },
     ]);
@@ -983,6 +1413,87 @@ describe("what the type system refuses", () => {
 
     // No runtime claim beyond the type: the Delegation record itself is not frozen, only the bundle
     // inside it is — see the freezing test above.
+    expect(rejected).not.toThrow();
+  });
+
+  it("refuses a Delegate Command that states no Contract to be answerable against", () => {
+    const rejected = (): Delegate => {
+      // @ts-expect-error a Delegation must be answerable, so the Command states its Contract
+      const command: Delegate = {
+        kind: "delegate",
+        occurredAt: LATER,
+        delegationId: DELEGATION,
+        zordId: SCOUT,
+        slice: SLICE,
+        harnessSources: SOURCES,
+      };
+      return command;
+    };
+
+    expect(rejected().kind).toBe("delegate");
+  });
+
+  it("refuses a Delegated fact that does not say what the Zord is held to", () => {
+    const rejected = (): Delegated => ({
+      kind: "delegated",
+      missionId: missionId("mission-1"),
+      occurredAt: LATER,
+      delegationId: DELEGATION,
+      zordId: SCOUT,
+      slice: SLICE,
+      harness: RESOLVED_HARNESS,
+      // @ts-expect-error the Contract in force is part of the fact: a Replay must not re-derive it
+      contract: undefined,
+    });
+
+    expect(rejected().kind).toBe("delegated");
+  });
+
+  it("refuses a submit-handoff Command that carries no Handoff to judge", () => {
+    const rejected = (): SubmitHandoff => {
+      // @ts-expect-error there is nothing to judge without the Handoff itself
+      const command: SubmitHandoff = {
+        kind: "submit-handoff",
+        occurredAt: LATER,
+      };
+      return command;
+    };
+
+    expect(rejected().kind).toBe("submit-handoff");
+  });
+
+  it("refuses a submit-handoff Command that repeats the DelegationId beside the Handoff", () => {
+    const rejected = (): SubmitHandoff => ({
+      kind: "submit-handoff",
+      occurredAt: LATER,
+      handoff: HONOURING_HANDOFF,
+      // @ts-expect-error the Handoff says which Delegation it answers; a second copy could disagree
+      delegationId: DELEGATION,
+    });
+
+    expect(rejected().kind).toBe("submit-handoff");
+  });
+
+  it("refuses a submit-handoff Command that brings its own Contract to be judged against", () => {
+    const rejected = (): SubmitHandoff => ({
+      kind: "submit-handoff",
+      occurredAt: LATER,
+      handoff: HONOURING_HANDOFF,
+      // @ts-expect-error the Contract is on the Delegation: the judged party does not pick the standard
+      contract: contract([]),
+    });
+
+    expect(rejected().kind).toBe("submit-handoff");
+  });
+
+  it("refuses rewriting the Handoff that settled a Delegation", () => {
+    const state = withDelegationSettled();
+    const delegation: Delegation = state.delegations[0];
+
+    // Assigning the value the field already holds, so `readonly` is the only thing that can reject it.
+    // @ts-expect-error what answered a Delegation is a fact: it is recorded once and never rewritten
+    const rejected = (): void => void (delegation.handoff = delegation.handoff);
+
     expect(rejected).not.toThrow();
   });
 

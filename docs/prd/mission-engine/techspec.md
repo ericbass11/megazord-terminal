@@ -38,7 +38,7 @@ Single context, as decided in the grill. New terms introduced by this work, to b
 | `Command`    | An intent submitted to a Mission, which the domain accepts or refuses.           |
 | `Event`      | A fact that happened to a Mission. Append-only, never revised.                   |
 | `Decision`   | The result of `decide`: accepted events, or a Refusal.                           |
-| `Clause`     | One requirement of a Contract, which a Handoff either satisfies or does not.      |
+| `Clause`     | One obligation of a Contract, which a Handoff either satisfies or does not.       |
 | `Capability` | A permission a Zord holds. The Core holds none of the executing kind.            |
 
 `Core` is the orchestrator and nothing else — never a folder, never a module. The module is

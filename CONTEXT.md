@@ -99,6 +99,11 @@ The interface agreed between Zords before code exists, and the reference a deliv
 or refused against.
 _Avoid_: spec, interface, agreement, schema
 
+**Clause**:
+One thing a Contract asks for, which a Handoff either satisfies or does not. Either required, which
+nothing excuses, or optional, which a Gap does.
+_Avoid_: requirement, obligation, stipulation
+
 **Handoff**:
 The structured delivery of a Zord: scope, artifacts, reference Contract and declared Gaps.
 _Avoid_: delivery, output, result, PR
@@ -188,6 +193,7 @@ in conversation, right is what is written in code and in every artifact.
 | roster         | `Roster`      |
 | skill          | `Skill`       |
 | contrato       | `Contract`    |
+| cláusula       | `Clause`      |
 | handoff        | `Handoff`     |
 | lacuna         | `Gap`         |
 | recusa         | `Refusal`     |

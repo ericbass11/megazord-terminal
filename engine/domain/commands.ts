@@ -14,14 +14,13 @@
  * Command that had to repeat the id could disagree with it, which is a state nobody should have to
  * handle.
  *
- * Two members of this union are still shaped for their refusal path only, and their payloads grow in
- * the task that owns their rule:
+ * One member of this union is still shaped for its refusal path only, and its payload grows in the task
+ * that owns its rule:
  *
- * - `SubmitHandoff` — Task 6 (the Handoff itself, validated against its Contract);
  * - `DecideGate` — Task 8 (approve, revise with a reason, kill).
  *
- * They are already here because the illegal transitions the lifecycle refuses are transitions *of
- * these Commands*: handing off a Delegation that was never made, and deciding a Gate that is not open.
+ * It is already here because one of the illegal transitions the lifecycle refuses is a transition *of
+ * that Command*: deciding a Gate that is not open.
  */
 
 import type { Core } from "./capability";
@@ -29,6 +28,8 @@ import type { DelegationId, GateId, MissionId, ZordId } from "./ids";
 import type { Money } from "./money";
 import type { Instant } from "./events";
 import type { HarnessSources } from "./harness";
+import type { Contract } from "./contract";
+import type { Handoff } from "./handoff";
 // Type-only import: erased at compile time, so there is no module cycle at runtime.
 import type { Briefing, Delivery, Mode, Slice } from "./mission";
 
@@ -68,6 +69,12 @@ export type DeliverMission = CommandAt & {
  * invocation asks for and which Catalog default is the floor, and the domain applies the precedence
  * rule. Accepting a finished bundle instead would move the one rule `harness.ts` exists to own out to
  * every caller, and two callers would eventually resolve it differently.
+ *
+ * The `contract` is **required**, and there is no default. A Delegation with no Contract is a Slice
+ * nobody can be held to, and an *optional* Contract would mean the product's loudest promise switches
+ * itself off by omission — every Handoff would pass, and nobody would have written anything down to
+ * say so. A Delegation that genuinely asks for nothing verifiable says it out loud, with a Contract
+ * that has no Clauses: empty is an answer, absent is not.
  */
 export type Delegate = CommandAt & {
   readonly kind: "delegate";
@@ -75,12 +82,24 @@ export type Delegate = CommandAt & {
   readonly zordId: ZordId;
   readonly slice: Slice;
   readonly harnessSources: HarnessSources;
+  readonly contract: Contract;
 };
 
-/** Answer a Delegation with a Handoff. Contract validation: Task 6. */
+/**
+ * Answer a Delegation with a Handoff.
+ *
+ * It carries the Handoff and **nothing else** — no separate `delegationId`, although Task 3's shape had
+ * one. A Handoff already says which Delegation it answers, and a Command that repeated the id could
+ * disagree with it, which is a state nobody should have to handle. It is the same rule that keeps
+ * `missionId` off every Command but `open-mission`.
+ *
+ * It does **not** carry a Contract either. The Contract is on the Delegation, recorded when the
+ * Delegation was made: a party that chooses the standard it is judged against has not signed a
+ * Contract, it has signed a formality. See `Delegated` in `events.ts`.
+ */
 export type SubmitHandoff = CommandAt & {
   readonly kind: "submit-handoff";
-  readonly delegationId: DelegationId;
+  readonly handoff: Handoff;
 };
 
 /** Decide the Gate the Mission is waiting on. Approve, revise and kill: Task 8. */

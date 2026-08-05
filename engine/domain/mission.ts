@@ -24,14 +24,15 @@
  *
  * ## Scope of this task
  *
- * This file delivers the lifecycle skeleton plus Delegation. The remaining rule clusters are
- * deliberately absent and are refused rather than guessed at — see `unmodelled` below:
+ * This file delivers the lifecycle skeleton, Delegation and the Contract judgement of a Handoff. The
+ * remaining rule clusters are deliberately absent and are refused rather than guessed at — see
+ * `unmodelled` below:
  *
  * | Cluster                          | Task | State  |
  * | -------------------------------- | ---- | ------ |
  * | Delegation mechanics             | 4    | here   |
  * | Harness resolution               | 5    | done   |
- * | Contract validation of a Handoff | 6    | absent |
+ * | Contract validation of a Handoff | 6    | here   |
  * | Cost accrual and Cap enforcement | 7    | absent |
  * | Gate decisions                   | 8    | absent |
  * | Replay projection                | 9    | absent |
@@ -48,8 +49,13 @@ import type { Money } from "./money";
 // clock, no randomness, no I/O — so calling it keeps `decide` pure too. `harness.ts` imports nothing
 // from this file, so there is no cycle to worry about.
 import { InvalidHarnessError, resolveHarness, type Harness, type HarnessSources } from "./harness";
+// A value import for the same reason: `decide` calls `validateHandoff`, which is pure and total and
+// never throws. `contract.ts` imports nothing from this file.
+import { validateHandoff, type Contract } from "./contract";
+import type { Handoff } from "./handoff";
 import type {
   Delegated,
+  HandoffAccepted,
   Instant,
   MissionDelivered,
   MissionEvent,
@@ -144,23 +150,53 @@ export function slice(portion: string): Slice {
  * that has moved on since would produce a different bundle and call it history. `decide` resolves
  * once, the `Delegated` fact carries the result, and `evolve` copies it.
  *
- * ## Open, and what settling it will look like
+ * It also carries the **Contract** it is answerable against, recorded at the moment it was made. That
+ * is where the Contract lives, and the two alternatives are both wrong: on the Mission, a Clause added
+ * after this Delegation was made would retroactively fail a Zord that never saw it; on the Handoff, the
+ * party being judged would pick the standard. Recorded here, `decide` judges once against the Contract
+ * that was in force, and folding the log later re-judges nothing.
+ *
+ * ## Open, and what settled it
  *
  * A Delegation is **open** from the moment it is recorded. There is deliberately no `status` field
  * saying so: a field that only ever holds one value is a lie the type system endorses (see
- * `CLAUDE.md`). Openness is the *absence of an answer*, and the answer is a Handoff, which is Task 6.
+ * `CLAUDE.md`). Openness is the *absence of an answer*, and the answer is a Handoff.
  *
- * Task 6 therefore adds — and this is the only shape it needs to add — an optional settlement to this
- * type (the Handoff that answered it, or the Refusal that rejected it), one `evolve` branch that
- * fills it in from its own Event, and a derived "is it still open" reading. Nothing here changes.
+ * So the settlement is the optional `handoff` — present exactly when a Handoff was accepted, absent
+ * while nothing has answered. Two shapes were rejected:
+ *
+ * - a **discriminated union** of `OpenDelegation | AnsweredDelegation`, which would make reading the
+ *   Handoff of an open Delegation a compile error. It needs a discriminant, and the only honest
+ *   discriminant available is a `status` field — the very thing this type refuses to carry.
+ * - a **pair of optional fields** (`handoff` plus a `settledAt`), which is a state that can be half
+ *   present and mean nothing. The Instant a Handoff was accepted at is on the Event; the state keeps
+ *   what a rule reads.
+ *
+ * A **refused** Handoff settles nothing: the field stays absent and the Zord may resubmit. See
+ * `decideSubmitHandoff`.
  */
 export type Delegation = {
   readonly id: DelegationId;
   readonly zordId: ZordId;
   readonly slice: Slice;
   readonly harness: Harness;
+  /** What this Delegation is answerable against, as agreed when it was made. */
+  readonly contract: Contract;
   readonly delegatedAt: Instant;
+  /** The Handoff that answered it. Absent while it is open — openness is this field not being here. */
+  readonly handoff?: Handoff;
 };
+
+/**
+ * Whether a Delegation is still waiting for an answer.
+ *
+ * The derived reading that replaces the `status` field this type does not have. A Delegation is open
+ * until a Handoff was accepted against its Contract; a refused Handoff leaves it open, which is what
+ * makes "refuse and resubmit" the loop rather than a dead end.
+ */
+export function isOpenDelegation(delegation: Delegation): boolean {
+  return delegation.handoff === undefined;
+}
 
 /** The consolidated outcome of a Mission, with the artifacts that prove it works. */
 export type Delivery = {
@@ -433,27 +469,107 @@ function decideDelegate(state: Mission, command: Delegate): Decision {
     zordId: command.zordId,
     slice: command.slice,
     harness: resolved.harness,
+    contract: command.contract,
   };
   return accepted([delegated]);
 }
 
+/**
+ * Answers a Delegation with a Handoff, and refuses it when it violates its Contract.
+ *
+ * **This is the promise.** A Handoff that breaks its Contract is refused here, by a pure function, with
+ * the violations listed — no human is asked, and the domain has no way to ask one. The Refusal is the
+ * ordinary return value of `decide`, which is exactly why criterion 3 is a property of the shape rather
+ * than a claim about behaviour.
+ *
+ * Four rules, in this order:
+ *
+ * 1. **The Mission must be running**, and **the Delegation must exist**. Both are
+ *    `illegal-transition`, so a Command that breaks both is refused once with both violations, state
+ *    first — a Handoff for a Delegation nobody made is not a Contract question at all.
+ * 2. **The Delegation must still be open.** A Delegation is answered once: two accepted Handoffs under
+ *    one id would leave the Mission unable to say which one it holds, and a Zord could quietly overwrite
+ *    a colleague's accepted delivery. Refused `illegal-transition` — the answered Delegation genuinely
+ *    has no second transition.
+ * 3. **The Handoff must honour the Contract recorded on the Delegation.** Refused
+ *    `contract-violation`, carrying every violation `validateHandoff` found.
+ *
+ * ## Refused, then resubmitted
+ *
+ * A Refusal settles nothing. The Delegation stays open, so the Zord fixes what was named and submits
+ * again, as many times as it takes, with no human in the loop. The alternative — a Refusal that closes
+ * the Delegation — would make automatic refusal *more* expensive than a human review: the only recovery
+ * would be a fresh Delegation under a new id, and the Replay would then claim the first Zord never
+ * delivered anything.
+ *
+ * ## What a refused attempt leaves behind, and what it does not
+ *
+ * Nothing, in the log. A Refusal is a return value and produces no Event, because `Decision` says
+ * `refused` carries a Refusal and no Events — the shape the techspec pins and criterion 3 requires.
+ *
+ * The glossary says a Replay includes what was refused, and this file does not deliver that. It is left
+ * whole, not half-built, and it is **Task 9's** decision, because Task 9 owns `replay.ts` and is the
+ * first thing that would read such a fact. Recording a `handoff-refused` Event now would be an Event no
+ * rule folds and nothing projects — the same lie as an always-zero `spent`. Two shapes are available to
+ * Task 9, and both are additive:
+ *
+ * - let the `refused` member of `Decision` carry facts as well as the Refusal, and fold a
+ *   `handoff-refused` Event that appends the attempt to its Delegation; or
+ * - build the Replay from the sequence of Decisions rather than from the Event log, leaving the fold
+ *   untouched.
+ *
+ * Declared as a Gap in this task's Handoff either way.
+ */
 function decideSubmitHandoff(state: Mission, command: SubmitHandoff): Decision {
-  const violations: string[] = [];
-
-  if (state.status !== "running") {
-    violations.push(`a Mission that is ${describe(state)} admits no Handoff`);
+  // Read as `unknown` before anything is taken off it. This is the first Command in the engine whose
+  // required field is *dereferenced* rather than copied, so a Command that lost it on the way in — a
+  // cast, a `JSON.parse` of a truncated payload — would throw where `decide` promised not to. Every
+  // other Command survives that by accident; this one survives it on purpose.
+  const claimed: unknown = command.handoff;
+  if (typeof claimed !== "object" || claimed === null) {
+    return refused("illegal-transition", [
+      `a Handoff is what a submit-handoff Command submits, and this one carries none`,
+    ]);
   }
-  if (findDelegation(state, command.delegationId) === undefined) {
-    violations.push(
-      `Delegation "${command.delegationId}" was never made in this Mission, ` +
+  const submitted = claimed as Handoff;
+  const wrongState =
+    state.status === "running" ? [] : [`a Mission that is ${describe(state)} admits no Handoff`];
+  const delegation = findDelegation(state, submitted.delegationId);
+
+  // Checked before the state, so the narrowing below is the compiler's and not a cast — and reported
+  // after it, so the violations read state first, as they did before this rule existed.
+  if (delegation === undefined) {
+    return refused("illegal-transition", [
+      ...wrongState,
+      `Delegation "${submitted.delegationId}" was never made in this Mission, ` +
         `so there is nothing to hand off`,
-    );
+    ]);
+  }
+  // The same condition as `wrongState`, written out again rather than read off its length: an aliased
+  // check does not narrow, and `state.id` below has to be the compiler's knowledge, not a cast.
+  if (state.status !== "running") {
+    return refused("illegal-transition", wrongState);
+  }
+  if (!isOpenDelegation(delegation)) {
+    return refused("illegal-transition", [
+      `Delegation "${submitted.delegationId}" was already answered by an accepted Handoff, ` +
+        `and a Delegation is answered once`,
+    ]);
   }
 
+  const violations = contractViolationsOf(delegation.contract, submitted);
   if (violations.length > 0) {
-    return refused("illegal-transition", violations);
+    return refused("contract-violation", violations);
   }
-  return unmodelled("submit-handoff", state);
+
+  const answered: HandoffAccepted = {
+    kind: "handoff-accepted",
+    missionId: state.id,
+    occurredAt: command.occurredAt,
+    delegationId: submitted.delegationId,
+    handoff: submitted,
+  };
+  return accepted([answered]);
 }
 
 function decideDecideGate(state: Mission, command: DecideGate): Decision {
@@ -495,6 +611,9 @@ export function evolve(state: Mission, event: MissionEvent): Mission {
 
     case "delegated":
       return state.status === "running" ? applyDelegated(state, event) : state;
+
+    case "handoff-accepted":
+      return state.status === "running" ? applyHandoffAccepted(state, event) : state;
 
     case "mission-halted":
       return state.status === "running" ? applyHalted(state, event) : state;
@@ -554,9 +673,36 @@ function applyDelegated(state: RunningMission, event: Delegated): RunningMission
         zordId: event.zordId,
         slice: event.slice,
         harness: event.harness,
+        contract: event.contract,
         delegatedAt: event.occurredAt,
       },
     ],
+  };
+}
+
+/**
+ * Settles the Delegation the accepted Handoff answered, by recording the Handoff on it.
+ *
+ * The `handoff` key is written **only** here, which is what makes its absence mean "open" rather than
+ * "not filled in yet". No re-judgement: `decide` already validated this Handoff against the Contract
+ * recorded on the Delegation, and a fold that re-runs a rule is not a fold — it would also make the
+ * state depend on a `validateHandoff` that may have been tightened since the fact was written.
+ *
+ * A fact for a Delegation the Mission does not hold, or for one that is already answered, is ignored.
+ * `decide` produces neither, but `evolve` is total and folds whatever log it is handed: overwriting on
+ * the second one would make the state depend on how many copies of the fact the log happened to carry,
+ * and the rule "a Delegation is answered once" would hold in `decide` and not in the fold.
+ */
+function applyHandoffAccepted(state: RunningMission, event: HandoffAccepted): RunningMission {
+  const answered = findDelegation(state, event.delegationId);
+  if (answered === undefined || !isOpenDelegation(answered)) {
+    return state;
+  }
+  return {
+    ...state,
+    delegations: state.delegations.map((delegation) =>
+      delegation.id === event.delegationId ? { ...delegation, handoff: event.handoff } : delegation,
+    ),
   };
 }
 
@@ -619,8 +765,8 @@ function refused(reason: RefusalReason, violations: readonly string[]): Decision
 /**
  * Refuses a Command the lifecycle admits but whose rule is not modelled yet.
  *
- * The Contract validation of a Handoff is Task 6 and the Gate decision is Task 8; Task 4 replaced the
- * `delegate` call with its accept path and changed nothing else. Until the other two land, the engine
+ * Only the Gate decision is left: Task 4 replaced the `delegate` call with its accept path, Task 6
+ * replaced the `submit-handoff` one, and each changed nothing else. Until Task 8 lands, the engine
  * refuses rather than inventing an accept path that would have to be rewritten — and a guessed
  * acceptance is exactly the drift this domain exists to prevent.
  *
@@ -642,9 +788,10 @@ function delegationsOf(state: Mission): readonly Delegation[] {
 /**
  * The Delegation a Mission remembers under an id, or `undefined` when it made none.
  *
- * One lookup, shared by the three rules that need it: refusing a DelegationId that is already used,
- * refusing a Handoff for a Delegation that was never made, and ignoring a duplicated `Delegated`
- * while folding. Task 6 needs the same lookup to find the Delegation a Handoff answers.
+ * One lookup, shared by every rule that needs it: refusing a DelegationId that is already used,
+ * refusing a Handoff for a Delegation that was never made, finding the Contract a Handoff is judged
+ * against, refusing a second Handoff for an answered Delegation, and ignoring a duplicated `Delegated`
+ * or `HandoffAccepted` while folding.
  */
 function findDelegation(state: Mission, id: DelegationId): Delegation | undefined {
   return delegationsOf(state).find((delegation) => delegation.id === id);
@@ -694,6 +841,34 @@ function resolvedHarnessOf(sources: HarnessSources): ResolvedHarness {
           : `resolving the Harness of this Delegation failed: ${String(thrown)}`,
       ],
     };
+  }
+}
+
+/**
+ * What a Handoff broke, without ever throwing, so `decide` keeps its promise.
+ *
+ * `validateHandoff` is total for every Handoff and Contract the types describe, and it guards the three
+ * lists it reads. What it deliberately does not do is parse *inside* those lists: a Contract whose
+ * `clauses` hold something that is not a Clause — reachable only through a cast or a deserialiser — would
+ * make it throw, and `decide` is contractually non-throwing.
+ *
+ * Same rule as `resolvedHarnessOf`: catch everything, rethrow nothing. A Contract nobody can read is
+ * reported as the Contract violation it is, because the Handoff genuinely cannot be shown to honour it.
+ *
+ * What `decide` deliberately does **not** do is re-check the Contract when the Delegation is made. A
+ * Contract is a value object with its own constructor, `contract()`, checked where it is built — exactly
+ * like a `Briefing`, a `Slice` or a `Money` cap, none of which `decide` re-validates either. A Harness is
+ * the one thing it checks, and only because `decide` is what *resolves* it, so the throw is its own to
+ * catch.
+ */
+function contractViolationsOf(reference: Contract, submitted: Handoff): readonly string[] {
+  try {
+    return validateHandoff(reference, submitted);
+  } catch (thrown) {
+    return [
+      `the Contract this Delegation was made against cannot be read, ` +
+        `so this Handoff cannot be shown to honour it: ${String(thrown)}`,
+    ];
   }
 }
 

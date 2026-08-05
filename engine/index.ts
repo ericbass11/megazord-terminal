@@ -51,10 +51,29 @@ export {
 } from "./domain/capability";
 
 export {
+  InvalidContractError,
+  clause,
+  contract,
+  validateHandoff,
+  type Clause,
+  type Contract,
+} from "./domain/contract";
+
+export {
+  InvalidGapError,
+  InvalidHandoffError,
+  gap,
+  handoff,
+  type Gap,
+  type Handoff,
+} from "./domain/handoff";
+
+export {
   InvalidInstantError,
   instant,
   instantFromDate,
   type Delegated,
+  type HandoffAccepted,
   type Instant,
   type MissionDelivered,
   type MissionEvent,
@@ -82,6 +101,7 @@ export {
   briefing,
   decide,
   evolve,
+  isOpenDelegation,
   isOpened,
   openMission,
   slice,
