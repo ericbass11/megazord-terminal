@@ -50,7 +50,7 @@ that proves the product exists.
 
 ## Task 5 — Cockpit server and protocol
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: HTTP + WebSocket, the discriminated envelope, `submit` wired so a gesture becomes a
   Command and a Refusal is sent back verbatim.
 - **Touches**: `cockpit/server.ts`, `cockpit/protocol.ts` and tests

@@ -1556,12 +1556,42 @@ shared memory forever is worse than not being able to write one.
 A clock that increments minutes produced `11:80` and 23 tests failed for a reason with nothing to do
 with the subject. Derive Instants from a fixed base.
 
+### A cache plant needs two gestures
+
+The finding of Task 5, and it is the shape of a whole class of stale-read tests. A plant that made
+the server cache the Replay instead of re-reading the file **passed all 63 tests**, because every
+staleness test wrote to the file *before* the server's first gesture — when the cache was still
+empty. The test that kills it opens the Mission through the server, writes behind its back, and then
+submits again: the external write has to land **between two of the server's own gestures**.
+
+Three smaller ones from the same task:
+
+- **A test's extra HTTP headers must replace, not append.** Sending `Sec-WebSocket-Key` twice made
+  Node keep the first, valid one, so a test meaning to send a bad key sent a good one beside it.
+- **"Send then close" is not "close during an append."** The frame may still be on the wire. The
+  premise has to be *made* true — hold the store open at `append`, the only moment "in flight" is
+  observable.
+- **`error.name`, not `instanceof`, at a boundary imported as a type.** Importing `UnknownPaneError`
+  would have made the server require `node-pty`; a test pins the class's `name` against the string
+  the server keys on.
+
+### The Close frame is the fault channel when the envelope has no error member
+
+`ToCockpit` has four members the techspec pins, and a Refusal is **data**, not a fault — so a Refusal
+travels as `decided` and a protocol fault travels as an RFC 6455 Close code. Widening the envelope to
+carry faults would have blurred the one distinction the Cockpit exists to keep: the domain refusing
+something is a normal answer, and the transport failing is not.
+
+The server also checks `Origin`, which the RFC does not require: a WebSocket is not same-origin
+restricted, so any page a browser loads could otherwise open one into a live process. It binds to
+loopback with no option to change it.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without
   `"type": "module"`, Vite's loader warns on every run. `.mts` fixes it without making the whole
   root package ESM, which would put the Next config files at risk.
-- `test.include` is scoped to `engine/**`, `runtime/**` and `tools/**`. The site is verified by
+- `test.include` is scoped to `engine/**`, `runtime/**`, `tools/**` and `cockpit/**`. The site is verified by
   `npm run build` and is never pulled into a Vitest run.
 - `testTimeout` is 30s, raised from the default 5s because `runtime/` spawns real processes and a
   timeout plus a kill escalation is wall-clock work. It is a ceiling, not a budget: the whole
