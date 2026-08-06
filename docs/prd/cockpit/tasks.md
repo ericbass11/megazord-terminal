@@ -23,7 +23,7 @@ that proves the product exists.
 
 ## Task 2 — Provider detection
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: which Zord CLIs exist in `PATH`, with the Catalog default for each.
 - **Touches**: `runtime/providers.ts` and test
 - **Depends on**: none
