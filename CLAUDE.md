@@ -282,7 +282,10 @@ and the Replay tells a different story, about a bundle nobody ever ran. `evolve`
 bundle out of the Event and never re-resolves — a fold that re-runs a rule is not a fold.
 
 The general form: **anything a rule computes from outside the aggregate is computed once, in `decide`,
-and recorded in the fact.** Task 7 will meet the same choice with a price list.
+and recorded in the fact.** Task 7 met the other half of it and it is worth reading beside this one —
+see "A fact carries what happened; the totals belong to the fold": there was no price list to meet,
+because a cost arrives already priced on the Command, and what a fact must *not* carry is the total
+computed from the facts themselves.
 
 ### `decide` never throws, so a throwing collaborator is wrapped
 
@@ -421,6 +424,128 @@ probe:
 So the rule from Task 5 stands, with a rider: no collateral damage is worth a second look, and the
 answer is either "the guarantee is the absence of something" or "the runtime half is carrying the load,
 and it is tested".
+
+### The Cap is reached at equality, and reaching it is not the same as crossing it
+
+`hasReachedCap` is `spent >= cap`, in `meter.ts`, and it is the only place the boundary exists. The
+glossary word is **reached**, not exceeded: a Cap of R$ 50,00 with R$ 50,00 spent has nothing left in
+it. Read as `>`, the product would have to *breach* the limit before keeping its promise, so every
+Mission would overspend by at least one cent and the number a human typed would be one cent below the
+real limit.
+
+Two consequences that are not obvious until the comparison is written down:
+
+- A Cap of **zero** is reached by a Mission that has spent nothing. That is coherent rather than
+  awkward — a Mission with no money commissions no work — and it is why the Cap guard consults the
+  Meter and not only the halt: a Mission can be *running* and stopped by its Cap, which also happens
+  the moment Task 8 approves a Gate on a Mission that spent past its Cap while halted.
+- The same comparison decides an authorisation: a new Cap at or below `spent` is already reached, so
+  authorising it authorises nothing and is refused `cap-reached`.
+
+### An accrual is a report of the past, so it is recorded and then halts
+
+The accrual that crosses the Cap is **accepted**, and the halt is the second Event of the same
+Decision — `Decision`'s accepted member carries a list for exactly this. The money was gone before the
+domain heard about it: refusing the report would not un-spend it, it would only make the Meter
+understate what the Mission cost, and since the Cap is compared against that total, an understated
+total means a Mission that stops late or never.
+
+Corollary, and the one exception to "every subsequent Command is refused": `accrue-cost` is still
+accepted on a Mission halted at its Cap, because a Zord that was mid-run when the Cap was reached —
+which is how a Cap gets reached — keeps reporting. It is refused only once the Mission is **terminal**,
+where no Zord is left running and recording would change what a closed Mission cost. `evolve` folds it
+on `halted` for the same reason, and produces **no second halt**: `evolve` keeps the first halt, so a
+second `MissionHalted` would be a fact that folds to nothing.
+
+### `cap-reached` is a state's reason, not a Command's
+
+Task 7 changed the *reason* three Commands are refused with on a Mission stopped at its Cap —
+`delegate`, `submit-handoff` and `deliver-mission` now say `cap-reached` where Task 3 said
+`illegal-transition`. Same rule as `unrunnable-harness`: a wrong reason on a Refusal is worse than a
+right one, and here the right one was already in the union with no user, like `missing-capability`
+before Task 4. The violation names the Cap **and** the remedy ("until its Cap is authorised"), which
+`illegal-transition` cannot.
+
+Two Commands deliberately keep the more specific answer, and this is the line: `cap-reached` is right
+only when the Cap is what stands in the way. `open-mission` is refused because the Mission is already
+open, whatever it spent; `decide-gate` is refused because **no Gate is open** — a Cap halt carries no
+GateId — and answering "the Cap" would send a human to the wrong remedy. So `decideDecideGate` was not
+touched at all, which also left Task 8's `unmodelled` call byte-identical.
+
+The one place all of this is decided is `stoppedAtCap` plus `stateBlock` in `mission.ts`: what the Cap
+blocks and what an authorisation unblocks read the same predicate, so they cannot drift apart. A
+`state.status !== "running" || stoppedAtCap(state)` written **inline** still narrows to
+`RunningMission` in the fall-through; the same condition read off a `const` does not — the aliasing
+trap this file already records for `in`.
+
+### Authorising raises the Cap; permission to continue would be a loop
+
+Task 3 left `halted` with no exit, and this is the Cap's: `authorise-cap` carries a **new, absolute
+Cap**, strictly above what was already spent. Resuming at the same Cap would resume a Mission whose
+limit is still reached, so the next commissioning Command would be refused again and nothing would
+have changed — "the Mission stops and asks for authorisation" would be a loop instead of a question.
+What the human answers is not "carry on?" but "how much more?".
+
+Absolute rather than an increment: an increment has to be added to a `spent` the authoriser read a
+minute ago, so two authorisations on a stale reading produce a Cap nobody chose, and "+R$ 30" needs a
+second fact to be legible in a Replay. It touches `spent` only by leaving it alone — the money is gone,
+and `money.ts` still has no subtraction for anyone to reach for.
+
+It is also **not** a Cap editor: on a Mission the Cap is not stopping, it is refused
+`illegal-transition`. Revising a budget mid-flight is a different act with rules this PRD does not
+model (who may lower it, what happens to work already commissioned). And a Mission halted at a **Gate**
+refuses it too, in `decide` *and* in `evolve` — a Gate is answered by a Gate decision, and a
+hand-written log must not be able to walk a Mission past a Gate by raising its Cap.
+
+### Per Pane means per Delegation, and the finer grain keeps the coarser
+
+There is no Pane type and Task 7 did not invent one. A Pane is one terminal with one Zord inside; the
+thing the domain can name is the Delegation that Zord is running, so `spent` lives on the Delegation.
+A per-Zord reading is the sum of its Delegations, while the reverse cannot be recovered — one Zord may
+hold two Slices — so the finer grain is the only one that loses nothing. A parallel map on the Mission
+keyed by DelegationId was rejected: it can hold an id the Mission never delegated.
+
+The Mission carries a `spent` **as well**, which looks like the same number twice and is deliberate:
+the Cap comparison must never throw, and summing a list of `Money` on every read would put
+`addMoney`'s overflow throw inside `decide`. Both copies are written by one rule from one fact, and
+`meter.test.ts` pins that the total equals the sum of the Panes.
+
+### A fact carries what happened; the totals belong to the fold
+
+`CostAccrued` carries `cost` and **not** the running totals. That is not the opposite of "a fact
+carries the resolved value, never the recipe": `cost` comes from **outside** the aggregate, so it is on
+the fact, while a total is computed from the facts themselves, so it is the fold's answer. Recording
+totals too would put the same number in two places and let a hand-written log claim a total its own
+accruals do not add up to.
+
+### Computing with a field is a third threat level, above dereferencing it
+
+The engine now has three grades of cast-tolerance, and they need different code:
+
+- Task 3 and Task 4 **copy** a required field onto an Event — a missing one produces a useless fact.
+- Task 6 **dereferences** one (`command.handoff.delegationId`) — a missing one throws, so it reads it
+  as `unknown` first.
+- Task 7 **computes** with one — `addMoney(spent, cost)` on a `cost` that is `undefined`, a string or a
+  float throws inside `money.ts`. So `amountOf` in `meter.ts` wraps `moneyFromCents` and answers
+  `undefined`, and both callers do the truthful thing with it: `decide` refuses, `evolve` ignores.
+
+`decide` and `evolve` must agree about what they will not record, or a fold stops equalling the
+sequence of Decisions that produced it. The overflow case is the live example: `decide` refuses it
+`cap-reached` (a total past the exactly-representable range is beyond any Cap), `evolve` returns the
+state untouched.
+
+### No identity model, so no authoriser on the fact
+
+`CapAuthorised` records the new Cap and not who authorised it. Nothing in `engine/` names a person —
+the Core is a capability set — so an `authorisedBy` would be a claim no rule could check, which is the
+always-zero field again. It is a **declared Gap**, not a shape: a Gate decision (Task 8) faces exactly
+the same question and should answer it the same way, or the two will drift. Whoever adds an actor model
+adds both.
+
+The Meter's other two Gaps are the same kind and are recorded at the top of `meter.ts`: the glossary
+says the Meter accounts **tokens** and cost, per Pane, per Mission and per **Combination**, and neither
+tokens nor Combination has a source in this PRD — the `AgentRunner` port reports a cost and nothing
+else, and there is no Combination aggregate.
 
 ### Vitest boundaries
 

@@ -58,6 +58,10 @@ in later PRDs.
 5. Providers, credentials, media generation, marketplace, voice.
 6. Refactoring the site to consume the glossary. It is a real debt, tracked, but a separate PRD.
 7. Retro-documenting the site: SDD applies from here forward.
+8. **Token counting.** The glossary defines the Meter as the accounting of tokens *and* cost, and
+   this PRD delivers cost only: the `AgentRunner` port reports a cost and there is no price list to
+   derive one from a token count. A `tokens` field no rule could fill would be the always-zero lie.
+   Additive once a runner reports them.
 
 ## Grill findings
 

@@ -86,7 +86,7 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 7 — Meter and Cap
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: cost accrues per Pane and per Mission; crossing the Cap halts the Mission and every
   subsequent command is refused with `cap-reached` until authorised.
 - **Touches**: `engine/domain/meter.ts`, `mission.ts` and tests

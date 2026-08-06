@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { core, orchestrationCapability } from "@engine/domain/capability";
 import {
   instant,
+  type CapAuthorised,
+  type CostAccrued,
   type Delegated,
   type HandoffAccepted,
   type MissionDelivered,
@@ -13,10 +15,12 @@ import {
 } from "@engine/domain/events";
 import { harness, type Harness, type HarnessSources } from "@engine/domain/harness";
 import { clauseId, delegationId, gateId, missionId, zordId } from "@engine/domain/ids";
-import { moneyFromDecimal } from "@engine/domain/money";
+import { ZERO_MONEY, moneyFromDecimal } from "@engine/domain/money";
 import { clause, contract, type Contract } from "@engine/domain/contract";
 import { gap, handoff, type Handoff } from "@engine/domain/handoff";
 import type {
+  AccrueCost,
+  AuthoriseCap,
   Delegate,
   MissionCommand,
   OpenMissionFields,
@@ -43,6 +47,7 @@ import {
   type Mission,
   type OpenedMission,
   type Refusal,
+  type RefusalReason,
   type RunningMission,
 } from "@engine/domain/mission";
 
@@ -189,6 +194,23 @@ function handoffAccepted(id = DELEGATION, answer: Handoff = HONOURING_HANDOFF): 
   };
 }
 
+/* Task 7's two facts, as fixtures for the totality and no-clock loops below. Their own rules are proven
+ * in `meter.test.ts`; here they are two more members of the union that every state must survive. */
+
+function costAccrued(id = DELEGATION, cost = moneyFromDecimal("1.00")): CostAccrued {
+  return {
+    kind: "cost-accrued",
+    missionId: missionId("mission-1"),
+    occurredAt: LATER,
+    delegationId: id,
+    cost,
+  };
+}
+
+function capAuthorised(cap = moneyFromDecimal("80.00")): CapAuthorised {
+  return { kind: "cap-authorised", missionId: missionId("mission-1"), occurredAt: LATER, cap };
+}
+
 function delivered(): MissionDelivered {
   return {
     kind: "mission-delivered",
@@ -232,12 +254,25 @@ function delegating(overrides: Partial<Delegate> = {}): Delegate {
 const delegateCommand: MissionCommand = delegating();
 const submitHandoffCommand: MissionCommand = submitting();
 const decideGateCommand: MissionCommand = { kind: "decide-gate", occurredAt: LATER, gateId: GATE };
+const accrueCostCommand: AccrueCost = {
+  kind: "accrue-cost",
+  occurredAt: LATER,
+  delegationId: DELEGATION,
+  cost: moneyFromDecimal("1.00"),
+};
+const authoriseCapCommand: AuthoriseCap = {
+  kind: "authorise-cap",
+  occurredAt: LATER,
+  cap: moneyFromDecimal("80.00"),
+};
 
 const EVERY_COMMAND: readonly MissionCommand[] = [
   openMissionCommand,
   deliverCommand,
   delegateCommand,
   submitHandoffCommand,
+  accrueCostCommand,
+  authoriseCapCommand,
   decideGateCommand,
 ];
 
@@ -245,6 +280,8 @@ const EVERY_EVENT: readonly MissionEvent[] = [
   opened(),
   delegated(),
   handoffAccepted(),
+  costAccrued(),
+  capAuthorised(),
   halted({ reason: "cap-reached" }),
   halted({ reason: "gate-open", gateId: GATE }),
   killed(),
@@ -276,6 +313,20 @@ function withDelegationSettled(): OpenedMission {
     throw new Error(`expected an opened Mission, got ${settled.status}`);
   }
   return settled;
+}
+
+/**
+ * Which reason a Command that needs a running Mission is refused with, in a given state.
+ *
+ * Task 7 changed one of these: a Mission stopped at its **Cap** is refused `cap-reached` rather than
+ * `illegal-transition`, because that is the reason a human can act on — it names the Cap and implies the
+ * remedy, where `illegal-transition` would say only that the transition does not exist. Every other
+ * non-running state keeps `illegal-transition`. `meter.test.ts` proves the Cap half.
+ */
+function expectedReasonIn(state: Mission): RefusalReason {
+  return state.status === "halted" && state.halt.reason === "cap-reached"
+    ? "cap-reached"
+    : "illegal-transition";
 }
 
 function expectStatus(state: Mission, status: Mission["status"]): Mission {
@@ -384,7 +435,7 @@ describe("delivering a Mission", () => {
       }
       const refusal = refusalOf(decide(state, deliverCommand));
 
-      expect(refusal.reason, label).toBe("illegal-transition");
+      expect(refusal.reason, label).toBe(expectedReasonIn(state));
       expect(refusal.violations.join(" "), label).toMatch(/cannot be delivered/);
     }
   });
@@ -459,6 +510,8 @@ describe("delegating a Slice of a Mission", () => {
       harness: RESOLVED_HARNESS,
       contract: REFERENCE_CONTRACT,
       delegatedAt: LATER,
+      // Task 7: the per-Pane half of the Meter, zero until the first accrual charges this Delegation.
+      spent: ZERO_MONEY,
     });
   });
 
@@ -478,6 +531,9 @@ describe("delegating a Slice of a Mission", () => {
    * - `handoff` is written by the Handoff rule, and **only** when a Handoff was accepted — which is why
    *   it is absent here. Openness is still the absence of an answer, not a `status: "open"` nobody can
    *   move.
+   *
+   * Task 7 added `spent`, with the accrual rule that moves it — the pinned key set is what made that a
+   * deliberate change rather than a silent one.
    */
   it("records the Delegation as open, which is the absence of an answer and not a field", () => {
     const delegation = soleDelegation(apply(running(), decide(running(), delegateCommand)));
@@ -488,6 +544,7 @@ describe("delegating a Slice of a Mission", () => {
       "harness",
       "id",
       "slice",
+      "spent",
       "zordId",
     ]);
     expect(Object.keys(delegation)).not.toContain("handoff");
@@ -574,7 +631,8 @@ describe("delegating a Slice of a Mission", () => {
 
     const refusal = refusalOf(decide(stopped, delegateCommand));
 
-    expect(refusal.reason).toBe("illegal-transition");
+    // Task 7: the Cap is the headline reason, and it does not make the second broken rule go away.
+    expect(refusal.reason).toBe("cap-reached");
     expect(refusal.violations).toHaveLength(2);
     expect(refusal.violations[0]).toMatch(/admits no Delegation/);
     expect(refusal.violations[1]).toMatch(/was already made in this Mission/);
@@ -1003,10 +1061,12 @@ describe("illegal transitions", () => {
   it("refuses a Delegation on a halted Mission", () => {
     const capRefusal = refusalOf(decide(haltedAtCap(), delegateCommand));
 
-    expect(capRefusal.reason).toBe("illegal-transition");
+    // Task 7: the Cap halt refuses `cap-reached` and says what would lift it. The Gate halt below keeps
+    // `illegal-transition`, because a Gate is answered by a Gate decision and not by money.
+    expect(capRefusal.reason).toBe("cap-reached");
     expect(capRefusal.violations).toEqual([
-      'a Mission that is halted because it reached its Cap admits no Delegation, ' +
-        'so Zord "zord-scout" cannot be given one',
+      "a Mission that is halted because it reached its Cap admits no Delegation, " +
+        'so Zord "zord-scout" cannot be given one until its Cap is authorised',
     ]);
 
     const gateRefusal = refusalOf(decide(haltedAtGate(), delegateCommand));
@@ -1024,7 +1084,7 @@ describe("illegal transitions", () => {
       }
       const refusal = refusalOf(decide(state, delegateCommand));
 
-      expect(refusal.reason, label).toBe("illegal-transition");
+      expect(refusal.reason, label).toBe(expectedReasonIn(state));
       expect(refusal.violations.join(" "), label).toMatch(/admits no Delegation/);
     }
   });
@@ -1068,8 +1128,12 @@ describe("illegal transitions", () => {
 
     const refusal = refusalOf(decide(stopped, submitHandoffCommand));
 
+    // Task 7: same violation, plus what would lift it, and the reason a human can act on. The work is not
+    // lost — a Refusal settles nothing, so the Zord resubmits once the Cap is authorised.
+    expect(refusal.reason).toBe("cap-reached");
     expect(refusal.violations).toEqual([
-      "a Mission that is halted because it reached its Cap admits no Handoff",
+      "a Mission that is halted because it reached its Cap admits no Handoff " +
+        "until its Cap is authorised",
     ]);
   });
 
@@ -1183,6 +1247,7 @@ describe("evolve", () => {
         harness: RESOLVED_HARNESS,
         contract: REFERENCE_CONTRACT,
         delegatedAt: LATER,
+        spent: ZERO_MONEY,
       },
       {
         id: OTHER_DELEGATION,
@@ -1191,6 +1256,7 @@ describe("evolve", () => {
         harness: RESOLVED_HARNESS,
         contract: REFERENCE_CONTRACT,
         delegatedAt: LATER,
+        spent: ZERO_MONEY,
       },
     ]);
   });

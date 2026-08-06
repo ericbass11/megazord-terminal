@@ -163,6 +163,11 @@ _Avoid_: billing, cost dashboard, counter
 The spending limit of a Mission. Once reached, the Mission stops and asks for authorisation.
 _Avoid_: budget, limit, quota
 
+**Authorisation**:
+The human answer that sets a new and higher Cap on a Mission stopped at its old one, and the only
+thing that resumes it.
+_Avoid_: top-up, unlock, waiver
+
 **Replay**:
 The auditable event sequence of a Mission, including what was refused.
 _Avoid_: log, history, trace, audit
@@ -207,4 +212,5 @@ in conversation, right is what is written in code and in every artifact.
 | superfície     | `Surface`     |
 | medidor        | `Meter`       |
 | teto           | `Cap`         |
+| autorização    | `Authorisation` |
 | replay         | `Replay`      |

@@ -69,9 +69,20 @@ export {
 } from "./domain/handoff";
 
 export {
+  accrued,
+  amountOf,
+  hasReachedCap,
+  meterOf,
+  type Meter,
+  type MeteredDelegation,
+} from "./domain/meter";
+
+export {
   InvalidInstantError,
   instant,
   instantFromDate,
+  type CapAuthorised,
+  type CostAccrued,
   type Delegated,
   type HandoffAccepted,
   type Instant,
@@ -83,6 +94,8 @@ export {
 } from "./domain/events";
 
 export type {
+  AccrueCost,
+  AuthoriseCap,
   DecideGate,
   Delegate,
   DeliverMission,

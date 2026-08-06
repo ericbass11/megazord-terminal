@@ -157,6 +157,14 @@ All three of hard-to-reverse, surprising-without-context and real-trade-off:
    with" a function of the Catalog *at reading time*, so folding the same log after a Catalog change
    would describe a bundle nobody ever ran.
 
+6. **The Cap is reached at equality, and authorising it raises it to a new absolute amount.**
+   Added in Task 7. Read as "exceeded" instead, every Mission would have to breach the limit before
+   honouring it, so the number a human typed would not be the limit. And resuming at the same
+   exhausted Cap would halt again on the next accrual, which means the authorisation answered the
+   wrong question: what a human replies is not "carry on?" but "how much more?". Absolute rather
+   than an increment, because an increment applies to a `spent` the authoriser read a minute ago,
+   and two authorisations from stale readings produce a Cap nobody chose.
+
 `RefusalReason` carries a fifth member, `unrunnable-harness`, added in Task 4 and accepted in
 review: the transition is legal, the Core may delegate, no Contract was broken and the Cap was not
 reached, so every existing reason would have put a wrong reason in front of a human.

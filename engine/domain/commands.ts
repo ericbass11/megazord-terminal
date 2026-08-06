@@ -102,6 +102,43 @@ export type SubmitHandoff = CommandAt & {
   readonly handoff: Handoff;
 };
 
+/**
+ * Report what a Zord spent against one Delegation of this Mission.
+ *
+ * An accrual is a **report of money already gone**, not a request to spend it. That is what makes it
+ * the one Command a Mission stopped at its Cap still accepts: refusing it would not un-spend the money,
+ * it would only make the Meter understate what the Mission cost — and the Cap would then be compared
+ * against a total that is too low, so the Mission would stop late or not at all. See
+ * `decideAccrueCost` in `mission.ts`.
+ *
+ * The `delegationId` is required and has no default. Cost is accounted per Pane as well as per Mission,
+ * and a Pane is what a Delegation runs in; an accrual naming no Delegation would be an amount the
+ * per-Pane half of the Meter could not place. Every cost this PRD can produce comes from a Zord
+ * invocation, which is always a Delegation.
+ */
+export type AccrueCost = CommandAt & {
+  readonly kind: "accrue-cost";
+  readonly delegationId: DelegationId;
+  readonly cost: Money;
+};
+
+/**
+ * Authorise a Mission stopped at its Cap to carry on, at a new Cap.
+ *
+ * The **new Cap**, absolute, and higher than what the Mission has already spent. Authorising at the same
+ * Cap would authorise nothing: the Mission would resume with its limit already reached and refuse the
+ * very next Command, so "the Mission stops and asks for authorisation" would be a loop rather than a
+ * question. What the human is asked is not "carry on?" but "how much more may it spend?", and the answer
+ * is a number.
+ *
+ * It carries no reason and no authoriser — see `CapAuthorised` in `events.ts` for why the second one is
+ * absent rather than merely unused.
+ */
+export type AuthoriseCap = CommandAt & {
+  readonly kind: "authorise-cap";
+  readonly cap: Money;
+};
+
 /** Decide the Gate the Mission is waiting on. Approve, revise and kill: Task 8. */
 export type DecideGate = CommandAt & {
   readonly kind: "decide-gate";
@@ -119,4 +156,6 @@ export type MissionCommand =
   | DeliverMission
   | Delegate
   | SubmitHandoff
+  | AccrueCost
+  | AuthoriseCap
   | DecideGate;

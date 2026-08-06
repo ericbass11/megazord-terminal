@@ -11,13 +11,14 @@
  * browser file is a bug waiting to happen. The term stays `Event` in prose; the symbol is
  * `MissionEvent`. The same applies to `MissionCommand` in `commands.ts`.
  *
- * Two facts in this union have no Command behind them yet, and that is deliberate:
+ * One fact in this union has no Command behind it yet, and that is deliberate:
  *
- * - `MissionHalted` is produced by the Cap (Task 7) and by a Gate opening (Task 8);
  * - `MissionKilled` is produced by a Gate decision (Task 8).
  *
- * The lifecycle folds them today because a state machine that cannot represent a halted Mission
- * cannot refuse anything on one, and refusing on one is what the lifecycle task delivered.
+ * The lifecycle folds it today because a state machine that cannot represent a killed Mission cannot
+ * refuse anything on one, and refusing on one is what the lifecycle task delivered. `MissionHalted`
+ * was in the same position until Task 7 gave it its first producer: an accrual that reaches the Cap.
+ * A Gate opening (Task 8) will be its second.
  */
 
 import type { DelegationId, MissionId, ZordId } from "./ids";
@@ -155,7 +156,53 @@ export type HandoffAccepted = EventOf & {
   readonly handoff: Handoff;
 };
 
-/** The Mission stopped and is waiting for a human. Produced by Task 7 (Cap) and Task 8 (Gate). */
+/**
+ * A Zord spent money against a Delegation of this Mission.
+ *
+ * It carries **what this one accrual cost**, not the totals it produces. The totals are the fold's
+ * answer, computed from inside the aggregate by `evolve`, and recording them here would put the same
+ * number in two places: a hand-written log could then claim a total its own accruals do not add up to,
+ * and the Replay would have to decide which of the two to believe.
+ *
+ * That is not a contradiction of the rule `Delegated` follows — a fact carries the resolved value,
+ * never the recipe. `cost` comes from **outside** the aggregate (the runtime spent it) so it is on the
+ * fact; a total is computed from the facts themselves, so it belongs to the fold.
+ *
+ * The `delegationId` is required, because a cost with no Pane behind it is an amount nobody can show
+ * anywhere. Every cost in this PRD comes from a Zord invocation, which is a Delegation: the
+ * `AgentRunner` port reports a `cost` for a `Harness` it ran, and nothing else in the domain spends.
+ */
+export type CostAccrued = EventOf & {
+  readonly kind: "cost-accrued";
+  readonly delegationId: DelegationId;
+  readonly cost: Money;
+};
+
+/**
+ * A human authorised a Mission stopped at its Cap to carry on, at a new and higher Cap.
+ *
+ * The fact carries the **new Cap** as an absolute amount rather than an increment. A Mission's Cap is
+ * the number a human set, so raising it is setting it again: an increment would have to be added to a
+ * `spent` the authoriser may have read a minute ago, and two authorisations racing on a stale reading
+ * would produce a Cap nobody chose. Absolute is also what a Replay can answer months later — "the Cap
+ * was raised to R$ 80,00" needs no other fact to be legible.
+ *
+ * There is deliberately no authoriser on it: this domain has no actor or identity model — the Core is
+ * a capability set, and nothing else in `engine/` names a person — so a field recording who authorised
+ * would be a claim no rule could check. Recorded as a Gap of Task 7; a Gate decision (Task 8) faces
+ * exactly the same question and should answer it the same way, or the two will drift.
+ */
+export type CapAuthorised = EventOf & {
+  readonly kind: "cap-authorised";
+  readonly cap: Money;
+};
+
+/**
+ * The Mission stopped and is waiting for a human.
+ *
+ * Produced by an accrual that reached the Cap (Task 7) and by a Gate opening (Task 8). Which of the two
+ * it was is in the `Halt`, which is a union precisely so a Cap halt cannot carry a GateId.
+ */
 export type MissionHalted = EventOf & {
   readonly kind: "mission-halted";
   readonly halt: Halt;
@@ -183,6 +230,8 @@ export type MissionEvent =
   | MissionOpened
   | Delegated
   | HandoffAccepted
+  | CostAccrued
+  | CapAuthorised
   | MissionHalted
   | MissionDelivered
   | MissionKilled;

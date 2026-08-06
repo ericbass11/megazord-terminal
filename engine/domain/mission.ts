@@ -33,18 +33,23 @@
  * | Delegation mechanics             | 4    | here   |
  * | Harness resolution               | 5    | done   |
  * | Contract validation of a Handoff | 6    | here   |
- * | Cost accrual and Cap enforcement | 7    | absent |
+ * | Cost accrual and Cap enforcement | 7    | here   |
  * | Gate decisions                   | 8    | absent |
  * | Replay projection                | 9    | absent |
  *
- * Consequently there is no `spent` on the state and no `cost-accrued` Event: an always-zero field
- * that no rule updates would be a lie, and Task 7 adds both together with the accrual that moves
- * them. For the same reason a Delegation carries no `status`: see `Delegation` below.
+ * A Delegation still carries no `status`, for the reason recorded under `Delegation` below. What it
+ * does carry, since Task 7, is `spent` — and the Mission carries one too: the field and the accrual
+ * that moves it arrived together, which is why neither existed before.
  */
 
 import type { Core, OrchestrationCapabilityName } from "./capability";
 import type { DelegationId, GateId, MissionId, ZordId } from "./ids";
-import type { Money } from "./money";
+// A value import: `formatMoney` is how an amount reads inside a violation a human will see, and
+// `ZERO_MONEY` is what a Meter starts from. Both are pure.
+import { ZERO_MONEY, compareMoney, formatMoney, type Money } from "./money";
+// A value import: the Cap boundary and the non-throwing arithmetic live in `meter.ts`, so no rule here
+// can disagree with another about when a Cap is reached. It imports nothing from this file at runtime.
+import { accrued, amountOf, hasReachedCap } from "./meter";
 // A value import, unlike everything else here: `decide` calls `resolveHarness`. It is pure — no
 // clock, no randomness, no I/O — so calling it keeps `decide` pure too. `harness.ts` imports nothing
 // from this file, so there is no cycle to worry about.
@@ -54,6 +59,8 @@ import { InvalidHarnessError, resolveHarness, type Harness, type HarnessSources 
 import { validateHandoff, type Contract } from "./contract";
 import type { Handoff } from "./handoff";
 import type {
+  CapAuthorised,
+  CostAccrued,
   Delegated,
   HandoffAccepted,
   Instant,
@@ -64,6 +71,8 @@ import type {
   MissionOpened,
 } from "./events";
 import type {
+  AccrueCost,
+  AuthoriseCap,
   DecideGate,
   Delegate,
   DeliverMission,
@@ -174,6 +183,16 @@ export function slice(portion: string): Slice {
  *
  * A **refused** Handoff settles nothing: the field stays absent and the Zord may resubmit. See
  * `decideSubmitHandoff`.
+ *
+ * ## What this Pane cost
+ *
+ * `spent` is the per-Pane half of the Meter, and it lives here because the Delegation is the only thing
+ * the domain can name that a Pane corresponds to — one Pane, one Zord, one Slice. A parallel map on the
+ * Mission keyed by DelegationId was rejected: it could hold an id the Mission never delegated, and "what
+ * was this Zord asked to do" and "what did it cost" would sit in two places that can disagree.
+ *
+ * It starts at zero and is moved by the accrual rule, which is why it did not exist before Task 7: a
+ * field no rule updates is a lie whatever its value.
  */
 export type Delegation = {
   readonly id: DelegationId;
@@ -183,6 +202,8 @@ export type Delegation = {
   /** What this Delegation is answerable against, as agreed when it was made. */
   readonly contract: Contract;
   readonly delegatedAt: Instant;
+  /** What this Pane has cost so far, in whole BRL cents. Zero until the first accrual. */
+  readonly spent: Money;
   /** The Handoff that answered it. Absent while it is open — openness is this field not being here. */
   readonly handoff?: Handoff;
 };
@@ -209,7 +230,9 @@ export type Delivery = {
  *
  * A union rather than a reason plus an optional GateId: a Cap halt has no Gate, and a Gate halt
  * always has one. Written flat, `{ reason: "cap-reached", gateId }` would be a representable state
- * with no meaning.
+ * with no meaning. The two halts are answered by different things — a Cap halt by an authorisation
+ * that raises the Cap, a Gate halt by a Gate decision — which is the second reason they are not one
+ * shape with a field that is sometimes there.
  *
  * `gateId?: never` on the Cap member is not decoration. Excess-property checking against a union
  * accepts a property that any member declares, so without it `{ reason: "cap-reached", gateId }`
@@ -240,6 +263,16 @@ type OpenedFields = {
   readonly core: Core;
   readonly openedAt: Instant;
   readonly delegations: readonly Delegation[];
+  /**
+   * What this Mission has spent in total, in whole BRL cents. The per-Mission half of the Meter.
+   *
+   * It is the sum of what its Delegations spent — every accrual names one — and it is folded here as
+   * well as onto the Delegation rather than summed on demand, because the Cap comparison must never
+   * throw: `addMoney` does, past the exactly-representable range, and summing a list on every read
+   * would put that throw inside `decide`. Both copies are written in one place, by one rule, from the
+   * same fact, so they cannot drift; `meter.test.ts` pins that they agree.
+   */
+  readonly spent: Money;
 };
 
 /** A Mission that does not exist yet: the state every Event log starts from. */
@@ -363,6 +396,10 @@ export function decide(state: Mission, command: MissionCommand): Decision {
       return decideDelegate(state, command);
     case "submit-handoff":
       return decideSubmitHandoff(state, command);
+    case "accrue-cost":
+      return decideAccrueCost(state, command);
+    case "authorise-cap":
+      return decideAuthoriseCap(state, command);
     case "decide-gate":
       return decideDecideGate(state, command);
     default:
@@ -385,11 +422,20 @@ function decideOpenMission(state: Mission, command: OpenMission): Decision {
   return accepted([missionOpenedFrom(command)]);
 }
 
+/**
+ * Consolidates the Mission into its Delivery.
+ *
+ * Refused at the Cap like every other commissioning Command, and that is a decision rather than an
+ * oversight: consolidating is not free. A Core reading every Handoff and writing the Delivery spends
+ * tokens, so a Mission that concluded itself while stopped at its Cap would spend money nobody
+ * authorised — and the halt would not be a halt if the Mission could still perform its one terminal
+ * transition. A human who wants a Mission at its Cap to end either authorises enough Cap to consolidate
+ * it, or kills it (Task 8).
+ */
 function decideDeliverMission(state: Mission, command: DeliverMission): Decision {
-  if (state.status !== "running") {
-    return refused("illegal-transition", [
-      `a Mission that is ${describe(state)} cannot be delivered`,
-    ]);
+  if (state.status !== "running" || stoppedAtCap(state)) {
+    const blocked = stateBlock(state, "cannot be delivered");
+    return refused(blocked.reason, [blocked.violation]);
   }
   const delivered: MissionDelivered = {
     kind: "mission-delivered",
@@ -405,8 +451,9 @@ function decideDeliverMission(state: Mission, command: DeliverMission): Decision
  *
  * Four rules, checked in this order, and the order is a decision:
  *
- * 1. **The Mission must be running.** A Mission that is halted, over or not open yet admits no
- *    Delegation. Refused `illegal-transition`.
+ * 1. **The Mission must be running, and not stopped at its Cap.** A Mission that is halted, over or not
+ *    open yet admits no Delegation. Refused `illegal-transition` — except when what stops it is the Cap,
+ *    which is refused `cap-reached`: see `stateBlock`.
  * 2. **The DelegationId must be free.** Two different Delegations under one id cannot be folded
  *    deterministically — the Replay would carry two contradictory facts about the same thing and the
  *    Handoff that answers "that" Delegation would not know which one it answered. Refused
@@ -439,12 +486,14 @@ function decideDelegate(state: Mission, command: Delegate): Decision {
             `and a Mission makes each one once`,
         ];
 
-  if (state.status !== "running") {
-    return refused("illegal-transition", [
-      `a Mission that is ${describe(state)} admits no Delegation, ` +
-        `so Zord "${command.zordId}" cannot be given one`,
-      ...alreadyUsed,
-    ]);
+  if (state.status !== "running" || stoppedAtCap(state)) {
+    const blocked = stateBlock(
+      state,
+      `admits no Delegation, so Zord "${command.zordId}" cannot be given one`,
+    );
+    // The used id is still reported beside the state: a Command can be wrong in more than one way at
+    // once, and the Cap being the headline does not make the second problem go away.
+    return refused(blocked.reason, [blocked.violation, ...alreadyUsed]);
   }
   if (alreadyUsed.length > 0) {
     return refused("illegal-transition", alreadyUsed);
@@ -532,23 +581,26 @@ function decideSubmitHandoff(state: Mission, command: SubmitHandoff): Decision {
     ]);
   }
   const submitted = claimed as Handoff;
-  const wrongState =
-    state.status === "running" ? [] : [`a Mission that is ${describe(state)} admits no Handoff`];
+  const admissible = state.status === "running" && !stoppedAtCap(state);
   const delegation = findDelegation(state, submitted.delegationId);
 
   // Checked before the state, so the narrowing below is the compiler's and not a cast — and reported
   // after it, so the violations read state first, as they did before this rule existed.
   if (delegation === undefined) {
-    return refused("illegal-transition", [
-      ...wrongState,
+    const unknown =
       `Delegation "${submitted.delegationId}" was never made in this Mission, ` +
-        `so there is nothing to hand off`,
-    ]);
+      `so there is nothing to hand off`;
+    if (admissible) {
+      return refused("illegal-transition", [unknown]);
+    }
+    const blocked = stateBlock(state, "admits no Handoff");
+    return refused(blocked.reason, [blocked.violation, unknown]);
   }
-  // The same condition as `wrongState`, written out again rather than read off its length: an aliased
-  // check does not narrow, and `state.id` below has to be the compiler's knowledge, not a cast.
-  if (state.status !== "running") {
-    return refused("illegal-transition", wrongState);
+  // The same condition as the one behind `admissible`, written out again rather than read off it: an
+  // aliased check does not narrow, and `state.id` below has to be the compiler's knowledge, not a cast.
+  if (state.status !== "running" || stoppedAtCap(state)) {
+    const blocked = stateBlock(state, "admits no Handoff");
+    return refused(blocked.reason, [blocked.violation]);
   }
   if (!isOpenDelegation(delegation)) {
     return refused("illegal-transition", [
@@ -570,6 +622,151 @@ function decideSubmitHandoff(state: Mission, command: SubmitHandoff): Decision {
     handoff: submitted,
   };
   return accepted([answered]);
+}
+
+/**
+ * Records what a Zord spent against one Delegation, and halts the Mission when that reaches the Cap.
+ *
+ * ## Recorded, then halted — never refused for crossing
+ *
+ * The accrual that crosses the Cap is **accepted**, and the halt is the second Event of the same
+ * Decision. The money was already spent by the runtime before anybody told the domain about it:
+ * refusing to record it would not un-spend it, it would only make the Meter understate what the Mission
+ * cost — and the Cap is compared against that total, so an understated total means a Mission that stops
+ * late, or never. `Decision`'s accepted member carries a list of Events for exactly this: one Command,
+ * two facts, in the order they happened.
+ *
+ * ## The one Command a Mission at its Cap still accepts
+ *
+ * An accrual is a report of the past, not an intent to spend, so the halt does not stop it: a Zord that
+ * was mid-run when the Cap was reached — which is how the Cap gets reached at all — keeps reporting, and
+ * the Meter keeps telling the truth about what the Mission cost. It does not halt a Mission that is
+ * already halted: `evolve` keeps the first halt, so a second `MissionHalted` would be a fact that folds
+ * to nothing, which is the same lie as an always-zero field. So the halt Event is produced only from
+ * `running`, the one state where halting is a real transition.
+ *
+ * ## What it refuses, and why those are not the same case
+ *
+ * - **A Command carrying no amount this domain can record.** The first Command in the engine that does
+ *   *arithmetic* with a required field, so a `cost` forced past the compiler would reach `addMoney` and
+ *   throw where `decide` promised not to. Refused `illegal-transition`, like Task 6's Handoff-less
+ *   `submit-handoff`.
+ * - **A Mission that is not open yet, or is over.** A terminal Mission has no Zord left running — they
+ *   die after delivering — so there is no in-flight spend to report, and recording one would change what
+ *   a closed Mission cost after the fact. Refused `illegal-transition`.
+ * - **A Delegation this Mission never made.** Per-Pane accounting has nowhere to put it, and the Mission
+ *   cannot attribute money to a Pane it never opened. Refused `illegal-transition`, state first when both
+ *   are wrong, exactly as a Handoff for an unknown Delegation is.
+ * - **A total that would stop being exactly representable.** Refused `cap-reached`: a total past
+ *   `Number.MAX_SAFE_INTEGER` cents is beyond any Cap a Mission could have been opened with, so the Cap
+ *   has certainly been reached — and the domain cannot record the amount truthfully either way.
+ */
+function decideAccrueCost(state: Mission, command: AccrueCost): Decision {
+  const cost = amountOf(command.cost);
+  if (cost === undefined) {
+    return refused("illegal-transition", [
+      `an accrual reports what a Zord spent, so an accrue-cost Command must carry a cost in whole ` +
+        `BRL cents, and this one does not`,
+    ]);
+  }
+
+  const spendable = isOpened(state) && (state.status === "running" || state.status === "halted");
+  const delegation = findDelegation(state, command.delegationId);
+  const wrongState = spendable ? [] : [`a Mission that is ${describe(state)} accrues no cost`];
+
+  if (delegation === undefined) {
+    return refused("illegal-transition", [
+      ...wrongState,
+      `Delegation "${command.delegationId}" was never made in this Mission, ` +
+        `so there is nothing to charge the cost to`,
+    ]);
+  }
+  // Written out again rather than read off `spendable`: an aliased check does not narrow, and `state.id`
+  // below has to be the compiler's knowledge.
+  if (!isOpened(state) || (state.status !== "running" && state.status !== "halted")) {
+    return refused("illegal-transition", wrongState);
+  }
+
+  const total = accrued(state.spent, cost);
+  if (total === undefined) {
+    return refused("cap-reached", [
+      `accruing ${formatMoney(cost)} on top of ${formatMoney(state.spent)} would exceed the largest ` +
+        `amount this domain can record exactly, so it is past any Cap`,
+    ]);
+  }
+
+  const accrual: CostAccrued = {
+    kind: "cost-accrued",
+    missionId: state.id,
+    occurredAt: command.occurredAt,
+    delegationId: command.delegationId,
+    cost,
+  };
+  if (state.status === "running" && hasReachedCap(total, state.cap)) {
+    const halt: MissionHalted = {
+      kind: "mission-halted",
+      missionId: state.id,
+      occurredAt: command.occurredAt,
+      halt: { reason: "cap-reached" },
+    };
+    return accepted([accrual, halt]);
+  }
+  return accepted([accrual]);
+}
+
+/**
+ * Authorises a Mission stopped at its Cap to carry on, at a new Cap.
+ *
+ * **This is the exit Task 3 deliberately left off `halted`.** A Cap halt is answered by money and a Gate
+ * halt is answered by a Gate decision (Task 8); a Mission halted at a Gate is therefore refused here,
+ * because raising a Cap does not answer a question a human was asked about the work.
+ *
+ * ## Authorising raises the Cap. It cannot merely permit continuing
+ *
+ * Resuming at the same Cap would resume a Mission whose limit is still reached, so the very next
+ * commissioning Command would be refused `cap-reached` again and the authorisation would have changed
+ * nothing at all — "the Mission stops and asks for authorisation" would be a loop instead of a question.
+ * So the Command carries a new Cap, and it must be **strictly above what was already spent**: at or below
+ * it, the Mission would resume already stopped, which is why that is refused `cap-reached` rather than
+ * accepted as a no-op. The question a human is answering is not "carry on?" but "how much more?".
+ *
+ * ## What it does not do
+ *
+ * It does not touch `spent`. The money is gone; there is nothing to give back, and `money.ts` has no
+ * subtraction for the domain to reach for. Raising the Cap is the whole of the change, which is why a
+ * Replay of the two amounts still adds up afterwards.
+ *
+ * It is also **not** a way to edit a Mission's budget mid-flight. On a Mission the Cap is not stopping,
+ * it is refused: revising a Cap that nothing has reached is a different act, with a different rule
+ * (who may lower it, and what happens to work already commissioned), and this PRD models none of that.
+ */
+function decideAuthoriseCap(state: Mission, command: AuthoriseCap): Decision {
+  const raised = amountOf(command.cap);
+  if (raised === undefined) {
+    return refused("illegal-transition", [
+      `an authorisation sets a new Cap, so an authorise-cap Command must carry one in whole BRL ` +
+        `cents, and this one does not`,
+    ]);
+  }
+  if (!isOpened(state) || !stoppedAtCap(state)) {
+    return refused("illegal-transition", [
+      `a Mission that is ${describe(state)} is waiting on no Cap authorisation`,
+    ]);
+  }
+  if (compareMoney(raised, state.spent) <= 0) {
+    return refused("cap-reached", [
+      `a Cap of ${formatMoney(raised)} is already spent by a Mission that has spent ` +
+        `${formatMoney(state.spent)}, so authorising it would authorise nothing`,
+    ]);
+  }
+
+  const authorised: CapAuthorised = {
+    kind: "cap-authorised",
+    missionId: state.id,
+    occurredAt: command.occurredAt,
+    cap: raised,
+  };
+  return accepted([authorised]);
 }
 
 function decideDecideGate(state: Mission, command: DecideGate): Decision {
@@ -615,6 +812,19 @@ export function evolve(state: Mission, event: MissionEvent): Mission {
     case "handoff-accepted":
       return state.status === "running" ? applyHandoffAccepted(state, event) : state;
 
+    // Folded on a halted Mission as well as on a running one: a Zord that was mid-run when the Mission
+    // stopped keeps reporting what it spent, and the Meter has to keep telling the truth about it. A
+    // terminal Mission is ignored — nothing is running in it any more.
+    case "cost-accrued":
+      return state.status === "running" || state.status === "halted"
+        ? applyCostAccrued(state, event)
+        : state;
+
+    case "cap-authorised":
+      return state.status === "running" || state.status === "halted"
+        ? applyCapAuthorised(state, event)
+        : state;
+
     case "mission-halted":
       return state.status === "running" ? applyHalted(state, event) : state;
 
@@ -644,6 +854,7 @@ function applyOpened(event: MissionOpened): RunningMission {
     core: event.core,
     openedAt: event.occurredAt,
     delegations: [],
+    spent: ZERO_MONEY,
   };
 }
 
@@ -675,9 +886,83 @@ function applyDelegated(state: RunningMission, event: Delegated): RunningMission
         harness: event.harness,
         contract: event.contract,
         delegatedAt: event.occurredAt,
+        spent: ZERO_MONEY,
       },
     ],
   };
+}
+
+/**
+ * Charges an accrual to the Delegation it names, and to the Mission's total.
+ *
+ * Both amounts move here, in one place, from one fact — which is what keeps the Mission's total equal to
+ * the sum of its Panes. Nothing is re-derived and nothing is compared against the Cap: halting is
+ * `decide`'s judgement, recorded as its own fact, and a fold that decided things for itself would let the
+ * same log fold to two different states as the rule changed.
+ *
+ * Three facts are ignored rather than applied, because `evolve` is total and folds whatever log it is
+ * handed while `decide` produces none of them:
+ *
+ * - an accrual for a Delegation this Mission never made — there is no Pane to charge it to;
+ * - an accrual whose amount is not one this domain can record;
+ * - an accrual that would push either total past the exactly-representable range. `decide` refuses that
+ *   one, so the two agree, and a fold stays equal to the sequence of Decisions that produced it.
+ */
+function applyCostAccrued(
+  state: RunningMission | HaltedMission,
+  event: CostAccrued,
+): RunningMission | HaltedMission {
+  const charged = findDelegation(state, event.delegationId);
+  if (charged === undefined) {
+    return state;
+  }
+  const cost = amountOf(event.cost);
+  if (cost === undefined) {
+    return state;
+  }
+
+  const total = accrued(state.spent, cost);
+  const pane = accrued(charged.spent, cost);
+  if (total === undefined || pane === undefined) {
+    return state;
+  }
+
+  const metered: OpenedFields = {
+    ...openedFieldsOf(state),
+    spent: total,
+    delegations: state.delegations.map((delegation) =>
+      delegation.id === event.delegationId ? { ...delegation, spent: pane } : delegation,
+    ),
+  };
+  // Written out per state rather than spread over the union, so neither state ends up carrying what it
+  // has no business carrying — the same reason `openedFieldsOf` exists.
+  return state.status === "running"
+    ? { ...metered, status: "running" }
+    : { ...metered, status: "halted", halt: state.halt };
+}
+
+/**
+ * Raises the Cap the fact names, and resumes a Mission that was halted because it reached it.
+ *
+ * `spent` is untouched: the money was spent, there is nothing to give back, and the model has no
+ * subtraction to reach for. One authorisation, one change — the Cap.
+ *
+ * A Mission halted at a **Gate** is left alone: that halt is answered by a Gate decision (Task 8), and
+ * resuming it here would silently discard a question a human was asked. `decide` refuses to produce this
+ * fact there; the fold refuses to apply it, so a hand-written log cannot bypass the rule either.
+ */
+function applyCapAuthorised(
+  state: RunningMission | HaltedMission,
+  event: CapAuthorised,
+): RunningMission | HaltedMission {
+  if (state.status === "halted" && state.halt.reason !== "cap-reached") {
+    return state;
+  }
+  const raised = amountOf(event.cap);
+  if (raised === undefined) {
+    return state;
+  }
+  return { ...openedFieldsOf(state), cap: raised, status: "running" };
 }
 
 /**
@@ -872,6 +1157,78 @@ function contractViolationsOf(reference: Contract, submitted: Handoff): readonly
   }
 }
 
+/**
+ * Whether the **Cap** is what is stopping this Mission.
+ *
+ * Two states qualify, and they are not the same thing:
+ *
+ * - **halted because it reached its Cap** — the halt the accrual rule produces, whatever the amounts on
+ *   the state say. A log written by hand can halt a Mission at its Cap without any accrual behind it, and
+ *   the Mission is still stopped by its Cap: the halt is the fact, not the arithmetic.
+ * - **running with its whole Cap spent** — reachable two ways, neither hypothetical. A Mission opened
+ *   with a Cap of zero has nothing to spend from the start, and a Mission whose Gate halt is approved
+ *   (Task 8) resumes with whatever it spent while stopped. Both must refuse to commission work, or the
+ *   Cap would be enforceable only through the halt and a Mission could walk around it.
+ *
+ * A Mission halted at a **Gate** is deliberately not included, even when its Meter has passed the Cap: the
+ * Gate is the nearer question, and a Gate is not answered with money. Once Task 8 resumes it, the second
+ * case above catches it on the next Command.
+ *
+ * This is the one predicate `cap-reached` refusals and `authorise-cap` both consult, so what the Cap
+ * blocks and what an authorisation unblocks cannot drift apart.
+ */
+function stoppedAtCap(state: Mission): boolean {
+  if (state.status === "halted") {
+    return state.halt.reason === "cap-reached";
+  }
+  if (state.status === "running") {
+    return hasReachedCap(state.spent, state.cap);
+  }
+  return false;
+}
+
+/** How a Mission stopped at its Cap reads inside a violation, truthfully for either way it got there. */
+function atCap(state: Mission): string {
+  return state.status === "running"
+    ? `a Mission that has spent its whole Cap of ${formatMoney(state.cap)}`
+    : "a Mission that is halted because it reached its Cap";
+}
+
+/** Why a Mission's own state refuses a Command: the reason to report, and the violation that says it. */
+type StateBlock = {
+  readonly reason: RefusalReason;
+  readonly violation: string;
+};
+
+/**
+ * The Refusal a Mission's state produces for a Command it does not admit, given how the Command reads —
+ * `"admits no Delegation, so Zord \"x\" cannot be given one"`, `"admits no Handoff"`, `"cannot be
+ * delivered"`.
+ *
+ * One place, so the three commissioning Commands cannot disagree about which state refuses what. The Cap
+ * is checked first and reported as `cap-reached`, because that is the reason a human can act on: it names
+ * the Cap and names the remedy, where `illegal-transition` would truthfully say "this transition does not
+ * exist" and leave the reader to guess that authorising the Cap is what brings it back. It is the same
+ * judgement Task 4 made adding `unrunnable-harness` — a wrong reason on a Refusal is worse than a right
+ * one — except that here no new reason is needed: `cap-reached` has been in the union since the techspec
+ * and this is its first user.
+ *
+ * Called only where the state genuinely blocks the Command; on a running Mission under its Cap it would
+ * produce a sentence about nothing, the same way `openedFieldsOf` would on an unopened one.
+ */
+function stateBlock(state: Mission, admits: string): StateBlock {
+  if (stoppedAtCap(state)) {
+    return {
+      reason: "cap-reached",
+      violation: `${atCap(state)} ${admits} until its Cap is authorised`,
+    };
+  }
+  return {
+    reason: "illegal-transition",
+    violation: `a Mission that is ${describe(state)} ${admits}`,
+  };
+}
+
 /** The Gate a Mission is waiting on, or `undefined` when none is open. */
 function openGateOf(state: Mission): GateId | undefined {
   if (state.status === "halted" && state.halt.reason === "gate-open") {
@@ -895,6 +1252,7 @@ function openedFieldsOf(state: OpenedMission): OpenedFields {
     core: state.core,
     openedAt: state.openedAt,
     delegations: state.delegations,
+    spent: state.spent,
   };
 }
 
