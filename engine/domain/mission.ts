@@ -38,7 +38,7 @@
  * | Contract validation of a Handoff | 6    | here  |
  * | Cost accrual and Cap enforcement | 7    | here  |
  * | Gate, and the kill that ends a Mission | 8 | here |
- * | Replay projection                | 9    | absent |
+ * | Replay projection                | 9    | `replay.ts` |
  *
  * A Delegation still carries no `status`, for the reason recorded under `Delegation` below, and neither
  * does a Gate: both are open exactly while nothing has answered them. What a Delegation does carry, since
@@ -586,18 +586,13 @@ function decideDelegate(state: Mission, command: Delegate): Decision {
  * Nothing, in the log. A Refusal is a return value and produces no Event, because `Decision` says
  * `refused` carries a Refusal and no Events — the shape the techspec pins and criterion 3 requires.
  *
- * The glossary says a Replay includes what was refused, and this file does not deliver that. It is left
- * whole, not half-built, and it is **Task 9's** decision, because Task 9 owns `replay.ts` and is the
- * first thing that would read such a fact. Recording a `handoff-refused` Event now would be an Event no
- * rule folds and nothing projects — the same lie as an always-zero `spent`. Two shapes are available to
- * Task 9, and both are additive:
- *
- * - let the `refused` member of `Decision` carry facts as well as the Refusal, and fold a
- *   `handoff-refused` Event that appends the attempt to its Delegation; or
- * - build the Replay from the sequence of Decisions rather than from the Event log, leaving the fold
- *   untouched.
- *
- * Declared as a Gap in this task's Handoff either way.
+ * The glossary says a Replay includes what was refused, and this file still does not deliver that —
+ * because **it is not this file's to deliver.** Task 9 answered the question it left open, and it took the
+ * second of the two shapes: the Replay is the sequence of **Decisions** (`replay.ts`), so a Refusal is
+ * recorded where it is returned, and neither `Decision` nor `evolve` had to change. The rejected shape —
+ * a `refused` member carrying facts — is argued at the head of `replay.ts`, and the decisive reason is
+ * visible from here: `decide(UNOPENED_MISSION, command)` refuses with no Mission in existence, so some
+ * refusals could never have been written as facts at all.
  */
 function decideSubmitHandoff(state: Mission, command: SubmitHandoff): Decision {
   // Read as `unknown` before anything is taken off it. This is the first Command in the engine whose

@@ -112,7 +112,12 @@ What the demand did not say, and what was decided.
    bypass it. Mitigated with a runtime guard plus an explicit review item.
 3. **The Replay may be over-modelled** if it is designed for auditing needs no one has expressed
    yet. Kept to what the Surfaces already promise, nothing more.
-4. **Adherence checks can produce false positives** — an `_Avoid_` term may legitimately appear
+4. **`evolve` does not check that an Event belongs to its Mission**, found in Task 9, so a
+   hand-written log mixing two Missions folds to nonsense. `replay` deliberately does not filter
+   either, because a filter would break the `replay(events) === events.reduce(evolve, …)` equality it
+   exists to have. Current behaviour is pinned by a test; the fix belongs in `evolve` and is a rule
+   change deserving its own decision, not a quiet patch inside a task that did not own it.
+5. **Adherence checks can produce false positives** — an `_Avoid_` term may legitimately appear
    in prose quoting what to avoid. The check must scope itself to code identifiers and to PRD
    body text, excluding the glossary itself.
 

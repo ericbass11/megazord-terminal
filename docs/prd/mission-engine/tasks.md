@@ -105,7 +105,7 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 9 — Replay, AgentRunner port and fake adapter, end-to-end
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: `replay(events)` folds to the same state built command by command; the `AgentRunner`
   port with a deterministic fake drives a whole Mission from Briefing to Delivery. **Inherited from
   Task 6**: acceptance criterion 7 names *refusal* among what the Replay must contain, and a refused

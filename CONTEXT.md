@@ -179,8 +179,13 @@ thing that resumes it.
 _Avoid_: top-up, unlock, waiver
 
 **Replay**:
-The auditable event sequence of a Mission, including what was refused.
+The auditable sequence of a Mission's Decisions, in order: every Command it was given and what the
+domain answered, the accepted Events and the Refusals alike. Enough to reconstruct its final state.
 _Avoid_: log, history, trace, audit
+
+**Step**:
+One entry of a Replay: a Command, and the Decision it got.
+_Avoid_: stage, phase
 
 ## Spoken form
 
@@ -226,3 +231,4 @@ in conversation, right is what is written in code and in every artifact.
 | teto           | `Cap`         |
 | autorização    | `Authorisation` |
 | replay         | `Replay`      |
+| passo          | `Step`        |

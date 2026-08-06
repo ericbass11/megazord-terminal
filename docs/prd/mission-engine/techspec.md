@@ -18,7 +18,7 @@ evolve(state: Mission, event: Event): Mission        // total, deterministic
 State is never mutated: it is folded from the event log. Three PRD criteria fall out of this shape
 instead of needing machinery of their own:
 
-- **Replay** (criterion 7) *is* the event log. Replaying is `events.reduce(evolve, initial)`, and
+- **Replay** (criterion 7) is built over the event log. The reading is `stepsOf`, not `project`: `project` is an `_Avoid_` term under **Workspace**, and the adherence check scans exported domain symbol names. Replaying is `events.reduce(evolve, initial)`, and
   "reconstructs the same final state" becomes a property test rather than a feature.
 - **Illegal transitions** (criterion 12) are refusals from `decide`, in one place, not scattered
   guard clauses.
@@ -60,7 +60,7 @@ engine/
     events.ts       Event union
     commands.ts     Command union
     mission.ts      Mission state, decide, evolve, openMission
-    replay.ts       replay(events), project(events)
+    replay.ts       replay(events), submit(), stepsOf() — the audit reading
   ports/
     agent-runner.ts AgentRunner port
   adapters/
@@ -165,6 +165,15 @@ All three of hard-to-reverse, surprising-without-context and real-trade-off:
    than an increment, because an increment applies to a `spent` the authoriser read a minute ago,
    and two authorisations from stale readings produce a Cap nobody chose.
 
+7. **The Replay is the sequence of Decisions, not a second Event log.** Added in Task 9 to settle
+   the obligation Tasks 6 and 8 handed forward. Criterion 7 requires refusals in the Replay, and a
+   Refusal cannot be an Event: `decide(UNOPENED_MISSION, command)` refuses before any Mission
+   exists, and every Event carries a `missionId`, so a fact-based shape could only ever hold *some*
+   refusals. The fold stays the only source of truth for state — `stateOf(replay)` is
+   `replay(eventsOf(replay))` — and the audit surface is a reader over Commands and Decisions.
+   General form: when the audit surface and the state disagree about what counts as history, add a
+   reader, not a fact.
+
 `RefusalReason` carries a fifth member, `unrunnable-harness`, added in Task 4 and accepted in
 review: the transition is legal, the Core may delegate, no Contract was broken and the Cap was not
 reached, so every existing reason would have put a wrong reason in front of a human.
@@ -182,7 +191,7 @@ ADR.
 | 4  | `harness.test.ts`: one case per precedence level winning, field by field |
 | 5  | `meter.test.ts`: accrual crossing the Cap halts; next command refused `cap-reached` |
 | 6  | `gate.test.ts`: blocked until decided; proceed, revise and kill paths, kill routed as its own Command |
-| 7  | `replay.test.ts`: fold equality — `replay(events)` equals the state built command by command |
+| 7  | `replay.test.ts`: fold equality over a log with a Refusal, a Gate decision, a Cap halt and an authorisation; `refusedIn(stepsOf(...))` for the refusals |
 | 8  | `tools/glossary-check.test.ts` over `engine/` and `docs/prd/` |
 | 9  | `tools/prd-structure.test.ts` over `docs/prd/*/` |
 | 10 | `tsc --noEmit` on the engine, plus a grep-based test for `any` and stray `@ts-expect-error` |

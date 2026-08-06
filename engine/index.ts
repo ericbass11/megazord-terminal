@@ -159,3 +159,33 @@ export {
   type Harness,
   type HarnessSources,
 } from "./domain/harness";
+
+export {
+  EMPTY_REPLAY,
+  eventsIn,
+  eventsOf,
+  refusedIn,
+  replay,
+  stateOf,
+  stepsOf,
+  submit,
+  type Replay,
+  type ReplayEntry,
+  type RefusedStep,
+  type Step,
+} from "./domain/replay";
+
+/**
+ * The boundary a Zord runs behind. A Surface implements it for a real CLI; the domain never imports it.
+ */
+export type { AgentReport, AgentRun, AgentRunner } from "./ports/agent-runner";
+
+/**
+ * The deterministic fake, exported on purpose: it is how a Surface builds against this engine — and how
+ * this engine proves a whole Mission — with no CLI installed and no network.
+ */
+export {
+  UnscriptedRunError,
+  fakeAgentRunner,
+  type FakeAgentRunner,
+} from "./adapters/fake-agent-runner";

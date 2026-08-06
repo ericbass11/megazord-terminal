@@ -142,9 +142,9 @@ export type Delegated = EventOf & {
  *
  * Only the **acceptance** is a fact here. A Handoff that violated its Contract is refused as the
  * return value of `decide` and produces no Event: the Delegation stays open, the Zord fixes and
- * resubmits, and no human is involved at any point. What that costs the Replay — which the glossary
- * says includes what was refused — is stated in `mission.ts` under `decideSubmitHandoff` and is Task
- * 9's decision, because Task 9 owns the Replay and is the first reader such a fact would have.
+ * resubmits, and no human is involved at any point. That is still true after Task 9, which is what
+ * decided it: a Replay is the sequence of **Decisions**, not of Events, so what was refused is recorded
+ * without any fact having to exist for it. See the head of `replay.ts`.
  *
  * It carries the whole Handoff rather than a summary, because "what did this Zord claim, and what did
  * it admit it left out" is precisely what a Replay is asked months later.

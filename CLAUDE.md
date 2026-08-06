@@ -702,6 +702,153 @@ call, and `toBe` is `Object.is`. Hold it in a `const` first. Vitest's message fo
 `serializes to the same string` with `Compared values have no visual difference`, which reads like a
 serialisation quirk and is in fact the assertion being wrong.
 
+### The Replay is the sequence of Decisions, and that is how a Refusal became auditable
+
+Tasks 6 and 8 handed Task 9 one open question — criterion 7 names **refusal** among what the Replay must
+contain, and a refused Decision emits no Event — with two admissible shapes. Task 9 took the second:
+`Replay = readonly ReplayEntry[]`, one Command and one Decision per entry, in `replay.ts`. `Decision`,
+`evolve` and the Event union are all untouched, and `stateOf(replay)` is literally
+`replay(eventsOf(replay))`, so the fold is still the only source of truth for state.
+
+The shape that was rejected — widen `refused` to carry facts — fails for a reason that is structural and
+not a matter of taste, and it is worth keeping because it settles the question permanently: **a refusal is
+not always attributable to a Mission.** Every `MissionEvent` carries a `missionId`, and
+`decide(UNOPENED_MISSION, command)` refuses before any Mission exists — that is one of criterion 12's own
+illegal transitions. A fact about a Mission that does not exist cannot be written, so that shape could
+only ever have held *some* refusals. Two more reasons behind it: the fact would have to be folded into the
+state to avoid being the Event-nobody-folds lie, which puts history inside the state that event sourcing
+exists to keep out of it; and criterion 3 rests on `refused` carrying a Refusal and nothing else.
+
+The general form, and it is new: **when the audit surface and the state disagree about what counts as
+history, add a reader, not a fact.** The log answers "where is this Mission"; the Replay answers "how did
+it get here", and it is allowed to know things the state does not.
+
+**This decision passes the three-part ADR test** — hard to reverse (every reader of the audit surface
+changes with it), surprising without context (the glossary said "event sequence", and it is not one), and a
+real trade-off between two shapes that were both admissible. `docs/adr/` is Task 10's scope, so Task 9 did
+not write it: the argument lives in full at the head of `replay.ts`, and Task 10 should add it to the four
+ADRs the techspec lists rather than discover it. The glossary definition of **Replay** was rewritten in the
+same breath, because "auditable event sequence *including what was refused*" cannot be true of any shape:
+a Refusal is not an Event.
+
+### A reading is derived, so its wording never enters the record
+
+A `Step` is a `ReplayEntry` plus an `ordinal` and a `summary`, and both are added by `stepsOf` at read
+time. Writing the sentence into the Replay would freeze today's wording into the record and put a second
+copy of what the Command and the Decision already say — `meterOf` deriving `reached` is the same call, made
+first. Two corollaries followed:
+
+- **Totals are the Meter's, per-step cost is the Replay's.** `eventsIn(steps, "cost-accrued")` reports what
+  each Step cost and nothing sums it, because `meterOf` already answers the totals from the state.
+- **The projection is pinned by what the product already promises**, not by what an auditor might want:
+  `lib/surfaces.ts:641` and `docs/PRODUTO.md:99` name which Zord ran with which Harness, what each
+  delivered, what was refused and why, where a human approved, and what each step cost. That is the whole
+  list, and it is why the reading is four functions and not a schema.
+
+### A glossary collision in an exported name is resolved by renaming, not by an exemption
+
+The techspec pins `project(events)`; the delivered name is `stepsOf`. `project` is an `_Avoid_` term under
+**Workspace**, and Task 10's check scans exported domain symbol names in `engine/domain/` — the exact
+category. Keeping it would have meant shipping a required exemption for a name that has a cheap
+replacement, and the PRD's own precedent is the opposite: the module was going to be `core/` and became
+`engine/` so `Core` stays the orchestrator. `stepsOf` also reads like the four readings beside it —
+`eventsOf`, `stateOf`, `eventsIn`, `refusedIn`.
+
+Two live hits Task 10 will meet in this task's files, both of them correct code and both deliberate:
+
+- **`AgentRunner`, `AgentRun`, `AgentReport`, `fakeAgentRunner`** — `agent` is `_Avoid_` under **Zord**.
+  These live in `engine/ports/` and `engine/adapters/`, outside the `engine/domain/` the symbol scan is
+  scoped to, and `AgentRunner` is the name the techspec pins. A Zord is what the domain calls the thing on
+  the far side of the port; the port is named after the boundary.
+- **`instruction`** on `AgentRun` — `_Avoid_` under **Skill**, and the field name the techspec pins. It is
+  the text a runner is handed, not an installable instruction block.
+
+Prose in `engine/` is a third case and it is already out of scope by the rule recorded above: `replay.ts`
+says **log** (of Events), **audit** and **history** freely, and the glossary's own definition of a Replay
+says "auditable". A scan that reads comments would fail on the file that implements the concept.
+
+### Not every type-level proof can be written as `@ts-expect-error`
+
+`eventsIn(steps, "delegated")` must answer `readonly Delegated[]` and not `readonly MissionEvent[]`, and
+**no probe can express that**: reading a field off either one fails — off the narrow type because the field
+is absent, off the union because it is absent from *some* member — so widening the return type left the
+directive used and reported no `TS2578`. What distinguishes the two is **assignability**, so the proof is a
+positive annotation (`const made: readonly Delegated[] = eventsIn(…)`), and its falsification is 18 `tsc`
+errors starting with `TS2322`, not a `TS2578`.
+
+That is a third answer to the rule this file already carries about probes with no collateral damage. The
+full set: a probe that reports `TS2578` **with** collateral is load-bearing; one **without** it either
+guards an absence or has a runtime half carrying the load; and a guarantee no probe can phrase is written
+as an annotation whose falsification **fails the build**. All three are evidence — what is never evidence
+is a falsification that changes nothing, which only proves you broke the wrong thing.
+
+Falsification tally for this task: 11 probes, 10 reported `TS2578` (4 with collateral inside the source:
+`Replay`'s `readonly` broke `submit` and `EMPTY_REPLAY`; `AgentRun.harness` optional produced `TS18048`
+inside the fake; widening it to accept sources produced `TS2339`; `cost: number` broke the e2e's script),
+and the eleventh is the annotation above.
+
+### A fake is scripted in order, because the loop worth testing asks the same thing twice
+
+`fakeAgentRunner(script)` answers one entry per call, in order. Keyed by instruction — the tempting
+"deterministic" choice — it could not answer the same question two different ways, and that is exactly
+criterion 3's loop: a Handoff is refused, the Zord is told what it broke, and it submits again. Being asked
+more times than scripted **fails** (`UnscriptedRunError`), rather than repeating the last answer, because a
+test that runs one more Zord than it meant to should hear about it at the call.
+
+It fails as a **rejected Promise**, not a synchronous throw: `run` returns a Promise by Contract, and a fake
+that threw where no real runner would lets a Surface get away with not handling rejection. And it forms no
+opinions — it does not read the instruction, check the Harness or price the run — because judging a Harness
+is `harness()`, judging a delivery is `validateHandoff`, and a fake with rules of its own is a second rule
+set the tests would start passing because of.
+
+### "No network, no CLI" is provable structurally, not only by stubbing
+
+`mission.e2e.test.ts` poisons `Date.now`, `Date.parse`, `Math.random` **and** `fetch` around the whole
+drive, and then does the thing that cannot be worked around: it reads every non-test file under `engine/`
+and asserts every `from "…"` specifier is a relative path. No dependency, no `node:child_process`, no
+`node:fs`, nothing to reach the network *with*. A stub proves the run did not call the one function you
+stubbed; the import check proves there was nothing else to call.
+
+The same file imports **only** from `@engine/index`, which is deliberate: it stands in for the first
+Surface, so it is held to a Surface's boundary and it proves the public surface is enough to *run* a Mission
+rather than merely to inspect one. `engine/index.ts` had no test before this.
+
+### The loop that drives a Mission is a Surface's, and `submit` is the part that is not
+
+`submit(replay, command)` decides against `stateOf(replay)` and appends the entry — it lives in the engine
+because a Surface that recorded only what it accepted would lose every Refusal, which is the half of the
+Replay a human most needs, and the PRD opens with exactly that drift. What stays outside is everything that
+reads a runner's answer and turns text into a Handoff: judging what a Zord *wrote* is not a Mission rule.
+
+`submit` re-folds the state on every call instead of carrying it. That is the mandate, not an oversight — a
+stored state would be a second copy of a truth the log already holds, and a hand-written Replay could then
+carry a state its own facts do not fold to. When tens of entries per Mission stops being the size, the
+answer is a Surface that keeps `stateOf` beside its Replay, never a Replay that remembers.
+
+### A Refusal carries a list, so pinning one violation is wrong twice
+
+Two of the three failures in this task's first green run were the same mistake: a Handoff with
+`satisfies: []` and a Gap on the required Clause breaks the Contract **twice** — the required Clause the Gap
+does not excuse, *and* the optional Clause it said nothing at all about. Expecting one violation failed
+loudly; the dangerous version is a test that asserts `violations[0]` and never notices the second. Assert
+the whole list.
+
+### The authorship Gap now has four sites
+
+`CapAuthorised` (Task 7), `GateDecided` and `MissionKilled` (Task 8), and now a `Step`, which says what was
+decided and not who decided it. `docs/PRODUTO.md` promises "quem decidiu o quê" and the domain answers it
+only as far as it can name anybody: the Core delegates, a Zord answers, a human decides a Gate. Whoever adds
+an actor model adds it to all four in one change.
+
+### Finding: `evolve` does not check that an Event belongs to its Mission
+
+`replay(events)` deliberately does **not** filter by `missionId`, because `evolve` does not either and a
+filter would make `replay(events)` disagree with `events.reduce(evolve, …)` — the one equality the function
+exists to have. A log that mixes two Missions therefore folds nonsense, quietly. Recorded as a finding of
+Task 9 with a test pinning the current behaviour, not fixed from inside a task whose scope is the Replay:
+the fix belongs in `evolve`, and it is a rule change (which Events a Mission accepts) that deserves its own
+decision.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without
@@ -711,6 +858,13 @@ serialisation quirk and is in fact the assertion being wrong.
   and is never pulled into a Vitest run.
 - `vitest.config.mts` is listed explicitly in `tsconfig.json` `include`, because `**/*.ts` does not
   match `.mts`.
+- **`expect(promise).rejects` must be awaited**, or Vitest warns and will fail in its next major. The
+  trap it hides is worse: `expect(() => void runner.run(…)).not.toThrow()` leaves a **floating rejected
+  Promise**, which Vitest reports as an unhandled error and warns "might cause false positive tests".
+  Assign the Promise inside the callback and `await expect(pending).rejects…` after it.
+- A `function describe(…)` in a test file **shadows Vitest's `describe`**, and the error arrives as
+  `TS2440` plus `TS2554: Expected 1 arguments, but got 2` at every real `describe(…)` — which reads like
+  the test framework is broken. Name test helpers away from `describe`, `it` and `expect`.
 
 ### Known broken, pre-existing
 
@@ -730,3 +884,8 @@ therefore has **no working linter**, which matters whenever a review step wants 
   must build and render with no network.
 - Skills live in `.agents/skills/` (real files) and are symlinked into `.claude/skills/`. They
   are versioned so the flow travels with the clone.
+- The **engine** is `engine/domain/` (twelve modules), `engine/ports/agent-runner.ts`,
+  `engine/adapters/fake-agent-runner.ts` and `engine/index.ts`, with tests beside their subject plus
+  `engine/mission.e2e.test.ts` at the root, which imports only `@engine/index`. 406 tests. It has **no
+  dependency of any kind** — every import inside `engine/` is a relative path, and `mission.e2e.test.ts`
+  asserts that.
