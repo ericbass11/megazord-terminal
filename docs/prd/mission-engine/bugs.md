@@ -4,13 +4,13 @@ Round 1 opened BUG-1 and BUG-2 by `/executar-qa` on 2026-08-06 against `1f2d709`
 documents the adherence check governs; nothing in `engine/` is at fault.
 
 Round 2 verified both fixes against `c4f2f5f` and opened **BUG-3**, which the fix to BUG-1
-introduced. Current state:
+introduced. Round 3 verified BUG-3 against `3bc8f62` and opened nothing. **No bug is open.**
 
 | Bug | Status | Verified by QA |
 | --- | --- | --- |
 | BUG-1 | fixed | yes — Round 2 reproduced the fix at the cause by three independent routes |
 | BUG-2 | fixed | yes — Round 2 falsified the corrected test by reinstating the deleted entry |
-| BUG-3 | fixed | not yet — Round 3 has not run |
+| BUG-3 | fixed | yes — Round 3 reproduced all three directions on the real tree, and judged the tie-break |
 
 ## BUG-1 — Two `_Avoid_` words are live in `prd.md` prose, escaping the scan through inflection
 
@@ -433,3 +433,44 @@ introduced. Current state:
   narrows it too: three false positives on the plant above, and on the real documents it blanks code-span
   content that was being read as prose. Nothing was widened, and no violation that the check reported
   before this fix goes unreported now.
+- **QA verification (Round 3)**: reproduced, all three directions, and accepted.
+
+  **Clean, on the real tree.** `export type Deliveries`, `export function deliveriesOf` and
+  `export type DeliveryId` were planted into `engine/domain/mission.ts` itself and none is reported;
+  removing `Delivery` from the term list makes every one of them fire, so it is the term carrying them and
+  not blindness. Nine further forms of my own — including `DELIVERIES`, `MissionDeliveries`, `Missions`,
+  `GateDecisions` and `Refusals` — are clean too.
+
+  **Still firing, on the same plant.** The next lines of the same file report `SubagentSquads` twice (for
+  `squad` through its plural and for `subagent` exactly), `workersOf` for `worker` and `dispatching` for
+  `dispatch`; a planted sentence of eight inflected words in `prd.md` reports all eight, with `deliveries`
+  in that same sentence correctly silent. The three anti-stemmer guards hold with the exemption table
+  emptied.
+
+  **The tie, derived and not listed.** 39 terms, 129 avoided entries, 128 enforced, one subtraction:
+  `delivery (Handoff)`. `enforceable` compares an entry against every *form* of every term rather than
+  against the terms alone, which is slightly wider than its own docstring says; today both readings give
+  the same one-entry list, and a divergence would show up in the test that pins the dropped list.
+
+  **The tie-break itself is judged in `qa.md`, Round 3, and accepted** — with its cost recorded as a
+  caveat rather than dismissed. The reading is right for two reasons the fix states and two more found
+  while checking it: prose has not enforced the word since Task 10 (read out of `1f2d709`), so this is the
+  name scan agreeing rather than a new licence; no rule reading names can excuse `DeliveryId` while
+  refusing `ZordDelivery`, since they differ only in word order and the ordering rule that separates them
+  puts `Deliveries` on the wrong side; `CONTEXT.md` itself defines a Handoff as "the structured delivery of
+  a Zord" while avoiding the word on the next line, so the collision lives in the glossary; and the name
+  scan has no table to absorb a false positive. The cost — `ZordDelivery` and `deliveryFor` are now clean —
+  is real, is one word of 129, and is a war-room question for `CONTEXT.md`, not a tool change.
+
+  **The span fix does not under-report.** Measured over all twelve governed documents with every entry
+  enforced and the table emptied, the new reader loses exactly two hits against the pre-fix reader and
+  gains none; both are wrapped-code-span content (`/executar-task` in `prd.md:94-95` and a path in
+  `qa.md:726-727`) on an already-exempted word. The 4 live wrapped spans over 8 lines were counted
+  independently, and every odd-parity line in the governed prose belongs to one of them. Both bounds hold
+  in more shapes than the tests use. One class is left open and is recorded as caveat 13: fenced lines are
+  removed before spans are found, so two unmatched runs either side of a fence with no blank line between
+  them pair across it and blank the prose in between, which Markdown would not do. No instance is live.
+
+  **Nothing was weakened**: the test file changed by pure addition — zero deleted lines, 35 → 46 tests,
+  62 → 90 assertions, none renamed — the exemption table is identical word for word at 33 entries, and
+  `engine/`, `CONTEXT.md`, `docs/adr/`, `techspec.md` and `tasks.md` are byte-identical to Task 10.

@@ -3,14 +3,15 @@
 Validation of `docs/prd/mission-engine/` against `prd.md`, `techspec.md`, `tasks.md`, `CONTEXT.md`,
 `CLAUDE.md` and `docs/adr/0001..0007`. Judged by running the proofs, never by reading the diff.
 
-**Current verdict: reproved — Round 2, one open bug (BUG-3).** Both rounds are kept below, oldest
-first. Round 1 is the record of the delivery as Task 10 left it; Round 2 re-validates after
-`/executar-bugfix` and is the verdict that stands.
+**Current verdict: approved with caveat — Round 3, no open bug.** All three rounds are kept below,
+oldest first. Round 1 is the record of the delivery as Task 10 left it; Rounds 2 and 3 re-validate
+after each `/executar-bugfix`, and Round 3 is the verdict that stands.
 
 | Round | Tree | Verdict | Open bugs |
 | --- | --- | --- | --- |
 | 1 | `1f2d709` (Task 10) | reproved | BUG-1, BUG-2 |
 | 2 | `c4f2f5f` (bugfix) | reproved | BUG-3 — BUG-1 and BUG-2 verified fixed |
+| 3 | `3bc8f62` (bugfix) | **approved with caveat** | none — BUG-3 verified fixed; 15 caveats closed out |
 
 ---
 
@@ -874,3 +875,318 @@ real runtime is still unreachable by QA, by design.
 Run `/executar-bugfix` for BUG-3, then `/executar-qa` a third time. It is one asymmetry in one
 function and the fix is small, but nothing advances with an open bug, and a check that reproves
 correct code is the one defect that gets a check deleted.
+
+---
+
+# Round 3 — after the second `/executar-bugfix`
+
+- **Verdict**: **approved with caveat** — four caveats need a decision before this goes to peer
+  evaluation, and none of them blocks the PRD. Every caveat is stated below, with what it costs.
+- **Date**: 2026-08-06
+- **Tree**: `3bc8f62` (bugfix), working tree clean before and after every probe below
+- **Open bugs**: none. BUG-3 is fixed at the cause, and the fix was reproduced here in all three
+  directions rather than accepted from the handoff.
+
+## Verdict in one paragraph
+
+BUG-3 is fixed, at the cause and not at the symptom: the module now has **one** derivation of "is this
+the same word" (`formsOf`), read by the avoided side and the term side of both scans, so the drift that
+produced the bug cannot recur one-sidedly. I reproduced all three directions on the real tree —
+`Deliveries`, `deliveriesOf` and `DeliveryId` planted into `engine/domain/mission.ts` are clean;
+`SubagentSquads`, `workersOf` and `dispatching` on the next lines fire, one of them twice; the tie
+resolves to exactly one subtracted entry, derived from `CONTEXT.md` rather than listed. The
+line-break fix **narrows** what is read as prose and I measured what it stops seeing: over all twelve
+governed documents, with every avoided entry enforced and the exemption table emptied, the new reader
+loses exactly two hits and both are genuine code-span content on an already-exempted word, and it gains
+none. Nothing was weakened to pass: the test file changed by pure addition — zero deleted lines, 35 → 46
+tests, 62 → 90 assertions — `engine/`, `CONTEXT.md`, `docs/adr/`, `techspec.md` and `tasks.md` are
+byte-identical to Task 10, and the exemption table is unchanged at 33 entries with identical contents.
+All thirteen acceptance criteria still hold, four type-level guarantees were falsified again with the
+same `TS2578` line numbers, and criteria 8, 9 and 10 were re-armed against the real tree. What is left
+is four caveats, and the sharpest of them is the cost of the tie-break itself: one word of 129 is now
+enforced nowhere. I judge that the right reading of the glossary and explain why below — the short
+version is that the prose scan has read it that way since Task 10, and no rule that excuses `DeliveryId`
+can refuse `ZordDelivery`.
+
+## BUG-3 — fixed at the cause, reproduced in three directions
+
+**1. An inflection of a defined term is clean.** Planted into the real `engine/domain/mission.ts`, not
+into a fixture, together with the names that must still fire on the next lines, and reverted from a copy
+taken first:
+
+```
+# planted at the end of engine/domain/mission.ts
+export type Deliveries = readonly Delivery[];
+export function deliveriesOf(): void {}
+export type DeliveryId = never;
+export type SubagentSquads = readonly string[];
+export function workersOf(): void {}
+export function dispatching(): void {}
+
+$ npx vitest run tools/glossary-check.test.ts
+ × passes clean over engine/domain
+engine/domain/mission.ts:1567 uses "subagent" (_Avoid_ under Zord) in: SubagentSquads
+engine/domain/mission.ts:1567 uses "squad" (_Avoid_ under Combination) in: SubagentSquads
+engine/domain/mission.ts:1568 uses "worker" (_Avoid_ under Zord) in: workersOf
+engine/domain/mission.ts:1569 uses "dispatch" (_Avoid_ under Delegation) in: dispatching
+ Tests  2 failed | 44 passed (46)
+```
+
+The first three names are absent from that report, which is the whole of BUG-3's first direction: the
+plural, the function form and the extended singular are all clean **on the real tree**, while the very
+next line fires twice — once for a plural (`squad`) and once for an exact word (`subagent`), so the
+widening still reaches both. Seven more names of my own, driven through the module's exported readers
+with a typechecked probe: `DELIVERIES`, `deliveryOf`, `MissionDeliveries`, `Missions`, `GateDecisions`,
+`capsOf` and `Refusals` are clean, and removing `Delivery` from the term list makes every one of the
+`delivery` names fire — so it is the term carrying them, not blindness.
+
+**2. An inflection of a genuinely avoided word still fires.** The name plant above already covers the
+plural (`SubagentSquads`, `workersOf`) and the present participle (`dispatching`). For prose, one sentence
+carrying the plural, the past and the consonant-plus-`y` form:
+
+```
+# planted at the end of prd.md
+The maestros dispatched subtasks to workers inside squads, and the deliveries were consolidated.
+
+prd.md:154  "maestro" (Core)   "dispatch" (Delegation)   "subtask" (Slice)
+prd.md:154  "worker" (Zord)    "squad" (Combination)
+```
+
+Five hits, every one from an inflected form, and `deliveries` in the same sentence correctly silent —
+which prose has always been. My probe adds `histories`, `audited` and `bots` to the same sentence and
+gets all eight words. And the three anti-stemmer guards still hold with the exemption table emptied:
+`catalogDefault`, `validateHandoff` and `CatalogEntry` are clean as names, and `Catalogs of validated
+Handoffs, logged and defaulted.` is clean as prose.
+
+**3. The tie resolves as claimed, and it is derived rather than listed.** Measured through the module's
+own readers: 39 terms, 129 avoided entries, **128 enforced**, and the one subtraction is
+`delivery (Handoff)`. I also checked the subtraction is not quietly wider than its own docstring:
+`enforceable` compares an entry against every *form* of every term, not against the terms alone, so an
+entry that were the plural of a term would also be dropped. Today the two readings give the same
+list — `delivery` either way — and the module's own test pins the dropped list on every run, so a
+divergence would show up as a red test rather than as silence.
+
+## The tie-break, judged
+
+The question the brief asks is whether "an `_Avoid_` entry that is also a defined term is enforced
+nowhere" is the right reading of the glossary, or whether it quietly licenses calling a Handoff a
+`delivery` — which is what the `_Avoid_` entry existed to stop.
+
+**It does license exactly that, and it is still the right reading.** Four findings decide it, and the
+first two are the ones that matter:
+
+1. **The prose scan has read it this way since Task 10** — verified at `1f2d709`, where
+   `proseViolations` already filtered out any avoided entry that is itself a term. So `delivery` has
+   never been enforced in prose, in any form, through two QA rounds that both accepted it. What changed
+   in `3bc8f62` is that the **name** scan stopped disagreeing with prose. That is one scan catching up
+   with the other, not a new permission.
+2. **No rule reading names can excuse `DeliveryId` while refusing `ZordDelivery`.** The two differ only
+   in word order — `wordsOf` gives `delivery id` and `zord delivery` — and the ordering rule that would
+   separate them (excuse the word when it is not the head) puts `Deliveries` and `deliveriesOf`, the
+   legitimate names BUG-3 was about, on the wrong side. I checked both directions; there is no middle
+   setting, so the choice really is all or nothing for that one word.
+3. **`CONTEXT.md` itself uses the word to define the concept it avoids it for.** Handoff reads "The
+   structured delivery of a Zord", with `delivery` in its own `_Avoid_` list on the next line. An entry
+   whose own definition line breaks it is not an entry a scan can hold the line on, and it is the
+   clearest sign that the collision lives in the glossary rather than in the tool.
+4. **The name scan has no exemption table and by decision will not grow one**, so a false positive there
+   has only two remedies: rename correct code, or edit the tool. `DeliveryId` is the name someone writes
+   first, and renaming it to satisfy a scan is how a scan gets switched off — PRD open risk 5, and the
+   one failure mode this check cannot absorb.
+
+**The loss, stated plainly, because it is real.** A Handoff misnamed a `delivery` is now clean in both
+scans: `export type ZordDelivery`, `deliveryFor`, and the sentence "the Zord's delivery lists its Gaps"
+all pass. I reproduced all three. Of these, only the two names are a change — the sentence was already
+passing before this fix. It is one word of 129, the other three words avoided under **Handoff** are
+unaffected (`result`, `output` and the capitalised entry all still fire as names), and the remedy is
+named in the source and in `CLAUDE.md`: resolve the collision in `CONTEXT.md`, by rewording Handoff's
+definition and keeping the entry, or by dropping the entry and letting `Delivery` be the only reading of
+the word. That is a glossary owners' decision — a war-room question, not a tool change, and not
+something a QA round or a bugfix should settle by itself.
+
+So: **caveat, not a bug.** The alternative on offer was a check that reproves the model for using its own
+vocabulary, and that trade is the wrong way round.
+
+## The line-break span fix does not under-report
+
+This is the risk the brief asks about, and it was measured rather than reasoned about. The pre-fix
+reader was transcribed into a probe so the two could be run over the same bytes, with **every** avoided
+entry enforced and the exemption table emptied — the widest possible reading, so nothing can hide behind
+an exemption:
+
+```
+governed documents: 12   (docs/prd/ + docs/adr/)
+lines the two readers disagree about: 636   (all but two of them whitespace: the new reader
+                                             preserves columns, the old one collapsed a span to one space)
+hits LOST by the new reader:   2
+  docs/prd/mission-engine/prd.md:95   task (Mission)
+  docs/prd/mission-engine/qa.md:727   task (Mission)
+hits GAINED by the new reader: 0
+```
+
+**Both losses are correct, and I read the source lines to be sure.** `prd.md:94-95` carries
+`/executar-task` opened on one line and closed on the next; `qa.md:726-727` carries `missing PRD
+artifacts:` the same way, closing after `tasks.md`. Both are wrapped code spans whose content is a
+command and a path — quoted, not naming — and in both cases the word is `task`, which the table exempts
+anyway. Nothing else in twelve documents reads differently in a way that changes a hit.
+
+The two bounds hold, and I falsified each in more shapes than the delivery's tests do:
+
+- **An unmatched run stays literal**, at run length one and two, after a closed span, and when the
+  closing run is a different length from the opening one — a run of two closed by a run of one, and a run
+  of one closed by a run of two, both report the word that follows. A stray backtick blanks nothing.
+- **A span never crosses a blank line**, including a line that is whitespace only, and including
+  several paragraphs deep with a real span in the paragraph after the stray tick — the violation is
+  reported at the right line number in every case.
+- **Wrapped spans are read as one span**, with every line kept and every column preserved: the two lines
+  of my probe document come back at their own line numbers and at their original length.
+
+I also counted the live instances independently of the handoff's claim, off the twelve documents as the
+bugfix left them: **4 wrapped spans across 8 lines**, and exactly **8** lines in the whole of `docs/prd/`
+and `docs/adr/` carry an odd number of backtick runs — the same 8 those spans cover. So there is no
+genuinely stray backtick anywhere in the governed prose today, which matters for the one class the fix
+leaves open.
+
+**The class it leaves open — caveat 13.** Fenced lines are removed *before* spans are found, so two
+unmatched runs on either side of a fence pair across it when no blank line separates them, and the prose
+between is blanked. Markdown would not do that: a fence ends the paragraph, so both ticks would stay
+literal. Reproduced:
+
+```
+A ` tick, then a fence with no blank line around it:
+<FENCE>ts
+const x = 1;
+<FENCE>
+A squad here, and another ` tick.
+```
+
+`<FENCE>` above stands for a line of three backticks, written that way so this document does not carry a
+fence inside a fence. The new reader reports nothing for that document; the pre-fix reader reported the
+word. Put the blank lines that Markdown convention places around a fence back, and the paragraph bound
+holds and the word is reported. The error direction is under-reporting, which is the one the module itself names as the worse
+of the two. Why it is a caveat and not a fourth bug: it needs an authoring accident — a genuinely
+unmatched run — and there is none in the tree; the fence-adjacency ingredient is common (63 fence markers
+sit next to a non-blank prose line) but harmless without the first; the pre-fix reader had a strictly
+worse version of the same class, live on 4 spans and wrong in both directions; and no test or docstring
+claims the fence case is handled. It is one line from closed — bound the span search at a fence the way
+it is bound at a blank line — and it wants the test that would have caught it.
+
+## Nothing was weakened
+
+| Claim | How it was checked | Found |
+| --- | --- | --- |
+| No `_Avoid_` entry was deleted | `git diff 1f2d709 HEAD -- CONTEXT.md` | empty — byte-identical, 39 terms, 129 avoided entries |
+| `engine/` untouched | `git diff --quiet 1f2d709 HEAD -- engine/` | byte-identical, and so are `docs/adr/`, `techspec.md`, `tasks.md`, `tools/prd-structure*` |
+| No test removed or renamed | every `it(`/`describe(` title, before versus now | none removed, none renamed; 11 tests and 1 group added |
+| No assertion loosened | `git diff` of the test file | **zero deleted lines** — the file changed by pure addition; `expect(` 62 → 90 |
+| No test switched off | `grep -rE '\.(skip\|todo\|only)\(' engine/ tools/` | nothing |
+| The exemption table did not grow | the 33 `word:` entries, before versus now | identical, word for word — nothing was absorbed |
+| Only four files changed at all | `git diff --name-only 36d864a HEAD` | `CLAUDE.md`, `bugs.md`, `glossary-check.ts`, `glossary-check.test.ts` |
+| The suite grew where it should | per-file counts, each file run alone | 469 total; only `glossary-check` changed, 35 → 46 |
+
+Per-file, each run on its own: `capability` 19, `money` 16, `ids` 6, `events` 6, `harness` 41,
+`contract` 25, `handoff` 20, `mission` 84, `meter` 63, `gate` 59, `replay` 39, `mission.e2e` 11,
+`fake-agent-runner` 17, `glossary-check` 46, `prd-structure` 17 — 469. Every count is Round 2's except
+`glossary-check`.
+
+**What the fix did to what the check enforces**, measured rather than taken from the handoff: 128 of 129
+avoided entries enforced in names (was 129, with one of them producing false positives), and the prose
+scan's enforced list identical to before, since it already subtracted terms. 135 exported names clean.
+378 hits across exactly 33 distinct words with the table emptied — so every exemption still carries at
+least one real line and no hit falls outside the table. The count moved from Round 2's 367 for one
+reason only: this document is longer.
+
+## The thirteen criteria, re-run
+
+```
+$ npm test        Test Files 15 passed (15)   Tests 469 passed (469)
+$ npx tsc --noEmit   EXIT=0
+$ npm run build      EXIT=0   28 static pages, all routes prerendered
+```
+
+**Four type-level guarantees falsified again at their source**, each restored and `tsc` re-run clean
+after it. Every line number is identical to Rounds 1 and 2:
+
+| Guarantee | Break | Result |
+| --- | --- | --- |
+| `Money` is branded | `type Money = number` | `TS2578` ×4 — `money.test.ts:117,128`, `meter.test.ts:996`, `fake-agent-runner.test.ts:204` |
+| A Core excludes execution Capabilities | `CoreCapability = Capability` | `TS2578` ×2 — `capability.test.ts:55,64` |
+| Exhaustiveness over both unions | `exhausted(value: unknown)` | `TS2578` — `mission.test.ts:1620` |
+| An id is branded | brand made optional | `TS2578` ×3 — `ids.test.ts:32`, `contract.test.ts:333`, `handoff.test.ts:221` |
+
+**Criteria 8, 9 and 10 re-armed against the real tree**, not against fixtures:
+
+- 8 — the plant above; both scans went red, with the inflected forms reported and the term forms clean.
+- 9 — `mkdir docs/prd/half-thought` with only a `prd.md`: `missing PRD artifacts:
+  half-thought/techspec.md, half-thought/tasks.md`, `1 failed | 16 passed (17)`.
+- 10 — `export const loose: any = 1;` appended to `money.ts` and a bare suppression comment appended to
+  `money.test.ts`: `engine/domain/money.ts:159`, `engine/domain/money.test.ts:141`,
+  `2 failed | 15 passed (17)`. Same two scans as Round 2, same behaviour.
+
+**Criteria 2, 3, 4, 5, 6, 7, 11, 12 and 13 rest on Round 1 and Round 2's evidence, re-run.** That is a
+reading of what changed, not an omission: `engine/` is byte-identical to `1f2d709` — verified with
+`git diff --quiet`, not assumed — so the behavioural criteria are proven by the same 406 engine tests
+passing again, the same falsifications reporting the same lines, and the same `docs/adr/` on disk for
+criterion 11's seven-row reading. Rounds 1 and 2 each also reproduced criteria 2, 3, 5, 6, 7 and 12 from
+the public surface with a typechecked probe of their own; re-deriving that a third time against unchanged
+bytes would add no evidence. Criterion 11 gained two exported names this round — `formsOf` and
+`enforceable`, both in `tools/` — and neither names a domain concept, so neither belongs in the glossary.
+
+## Caveat close-out
+
+Fifteen, including everything Rounds 1 and 2 recorded. Status is one of **accepted** (still open, and
+nothing to do about it), **resolved**, or **defect** (which would be a bug entry). None is a defect.
+
+| # | Caveat | Status |
+| --- | --- | --- |
+| 1 | Task 10 amended acceptance criterion 8, the criterion it was measured by | **accepted** — `prd.md` criterion 8 is byte-identical to Task 10; the narrowing is declared and defensible, and it still deserves a human's eye before peer evaluation |
+| 2 | The name scan does not cover `engine/ports/` or `engine/adapters/` | **accepted** — unchanged, still pinned by the test that shows the word is live when the port's text is handed to the scan |
+| 3 | `tasks.md` Task 10 still says `docs/adr/` carries four decisions; seven exist | **accepted** — `tasks.md` untouched; stale task text, under-described over-delivery |
+| 4 | `tasks.md` Task 3 still says all three illegal transitions return `illegal-transition` | **accepted** — unchanged; the tests, the ADR and `CLAUDE.md` are current |
+| 5 | The per-Combination Gap and the no-actor-model Gap live only in code and `CLAUDE.md` | **accepted** — `prd.md` read alone still overstates what the Meter and the governance facts carry |
+| 6 | "Strict TypeScript" is the `strict` family; two strictness flags are off | **accepted** — `tsconfig.json` untouched, and `harness.ts` documents the first as a condition the code is written for |
+| 7 | `npm run lint` does not work | **accepted** — re-checked this round: it still drops into ESLint's interactive setup question and never lints. Pre-existing, and it matters for `/executar-review` |
+| 8 | `qa.md` and `bugs.md` are themselves scanned by the glossary check | **accepted, and load-bearing again** — this round's text was written under that constraint and the suite is green with it in the tree |
+| 9 | `npm test` depends on the wording of documents | **accepted** — five entries still hang on a single line each (`spec`, `setup`, `conversation`, `rejection`, `feature`), all five in `prd.md` or `techspec.md`; every carrier of `directive` is still in this file. Rewriting this document instead of appending to it turns a `tools/` test red, and the remedy is to delete the entry the message names |
+| 10 | The prose exemptions widened with the matcher, silently and symmetrically | **accepted, and now symmetrical on purpose** — `formsOf` is one function read by both sides of every comparison, which is what BUG-3's fix bought. The `because` strings are still written in the singular |
+| 11 | Latent false-positive pressure from inflections of avoided words used as ordinary English | **accepted, and one instance turned out to be real** — BUG-3 was exactly this pressure landing in the scan with no table to absorb it. Still latent for the words Round 2 listed; one word less, since `delivery` is now enforced nowhere |
+| 12 | An inline code span wrapping across a line break defeats the span stripping | **resolved** — fixed at the cause, with the wrapped-span, unmatched-run and blank-line cases each tested. Verified here from both ends: 4 live wrapped spans over 8 lines, and the only two hits the change loses are code-span content |
+| 13 | Two unmatched backtick runs on either side of a fence pair across it, blanking the prose between | **accepted, with a recommendation** — new this round, direction is under-reporting, no instance is live, and it is one bound away from closed. See the span section above. The one caveat here I would ask to be closed before this goes out, because it is cheap and because the check's whole value is that it does not lie in either direction |
+| 14 | The name scan cannot see a capitalised entry followed by a lowercase plural | **accepted** — `wordsOf` splits `PRs` into two words and `TODOs` into two, so those two names escape the **name** scan while the singulars fire and prose catches both forms. Pre-existing and unchanged by all three fixes: `wordsOf` is byte-identical to Task 10, and the pre-BUG-1 scan missed them too. The remedy is a change to `wordsOf`, which is the one function every other rule reads |
+| 15 | The tie-break costs one word: `delivery` is enforced nowhere, in names or in prose | **accepted** — judged above at length. Right reading, real loss, and the remedy belongs in `CONTEXT.md` rather than in the tool. Worth a war-room minute, because it is the first time the glossary has contradicted itself and the answer sets the precedent for the next collision |
+
+The four that want a decision from a human rather than a shrug: **1** (a task amending its own
+criterion), **13** (one bound and one test), **14** (a known blind spot in the scan's word splitter), and
+**15** (a collision inside the glossary). None of them stops the engine doing what the PRD says it does.
+
+## Reproduced, versus taken on trust
+
+**Reproduced from scratch this round**: all three directions of BUG-3, on the real tree and again through
+the module's exported readers with a typechecked probe; the seven extra term-form names and the three
+names that must still fire; the derivation of the subtraction and its equality under both readings of "the
+same word"; the tie-break's second support, that no ordering rule separates `DeliveryId` from
+`ZordDelivery`; that prose never enforced the word, read out of `1f2d709` rather than believed; the
+tree-wide old-reader-versus-new comparison over twelve documents with every entry enforced and the table
+emptied; the two lost hits, read at their source lines; the two bounds in four shapes each; the
+fence-crossing class; the independent count of 4 wrapped spans over 8 lines and of the 8 odd-parity lines;
+the 128-of-129 enforced count, 135 exported names, 378 hits over 33 words, and the carrier count of every
+exemption; the acronym blind spot; byte-identity of `engine/`, `CONTEXT.md`, `docs/adr/`, `techspec.md` and
+`tasks.md`; the test-title, deleted-line and assertion counts; the full suite, per-file counts, `tsc` and
+the site build; four type-level falsifications; criteria 8, 9 and 10 re-armed in the real tree; and
+`npm run lint` still being broken. Every probe was typechecked with `npx tsc --noEmit` clean **while it
+sat in the tree**, then deleted, and the working tree was verified clean after every plant.
+
+**Taken on trust, and why**: the behavioural halves of criteria 2 to 7, 12 and 13, and the seven-ADR
+reading of criterion 11. `engine/` and `docs/adr/` are byte-identical to Task 10, both were reproduced
+from the public surface in Rounds 1 and 2, and a third derivation against unchanged bytes would produce
+the same answer without adding evidence. Whether the 33 exemptions and the `delivery` tie-break are the
+calls the people who own the glossary would make remains a war-room question — sharper now than in Round 2,
+because caveat 15 is a contradiction inside `CONTEXT.md` and not a reading of English. And the real
+runtime is still unreachable by QA, by design: PRD open risk 1 can only be closed by a real adapter.
+
+## Next
+
+No bug is open, so the flow moves on: `/executar-review`, and then the branch goes out for the two peer
+evaluations. Review runs last and never over an open bug — there is none. Two things for whoever runs it:
+caveat 13 is the one I would close in the same context beforehand, and caveats 1, 14 and 15 are questions
+for the peer evaluations and the weekly war-room rather than for another automated round.
