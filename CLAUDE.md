@@ -230,6 +230,16 @@ Two live examples Task 10 will meet, found while adding `Clause` in Task 6:
   is not a violation: the function names a judgement of a Handoff, not a Gate. A stem-based scan would
   flag it; a substring scan does not, because `validateHandoff` does not contain `validation`. Do not
   make the scan smarter than the rule.
+- `tasks.md` line 104 reads "approval resumes", and **Gate** has listed `approval` under `_Avoid_` since
+  before Task 8 — another pre-existing hit in PRD-folder prose, found while adding **Gate decision**, and
+  not editable from inside a task whose scope is the engine. It is the *right* word to avoid, too: only one
+  of the two Gate decisions is an approval, so calling the pair "approval" hides the other one. Reword the
+  line or exempt it; do not resolve it by deleting the `_Avoid_` entry.
+
+Task 8 added two glossary terms whose `_Avoid_` lists were checked against the tree before being written:
+**Gate decision** (`sign-off`, `gate result`) and **Kill** (`cancel`, `abort`). None of the four appears
+anywhere in `engine/` or `docs/prd/` today. Worth copying as a habit — grep the tree before adding an
+`_Avoid_` term, or the term arrives with a failing check attached.
 
 ### Domain unions are prefixed when the bare name is a DOM global
 
@@ -245,6 +255,18 @@ proofs, while their accept paths belong to Tasks 4, 6 and 8. The pattern used: i
 guard, and route the accept path to `unmodelled()`, which refuses with `illegal-transition`. The
 machine genuinely does not have the transition yet, instead of having a stub that fakes success.
 Each owning task replaces exactly one `unmodelled` call.
+
+**Task 8 replaced the last one and deleted the helper.** A function with no callers is dead weight, and
+leaving it in place would invite the next task to reach for it instead of modelling something. The pattern
+worked exactly as designed across three tasks, and the record of it is this entry — not a function nobody
+calls.
+
+One thing the last replacement could not keep: `decideDecideGate` read the open Gate through a helper
+(`openGateOf`), which was fine while its only job was to refuse, and stopped being fine the moment the accept
+path needed `state.id`. A helper returning `GateId | undefined` is not a type guard, so the state was never
+narrowed. The condition is now written out inline — `state.status !== "halted" || state.halt.reason !==
+"gate-open"` — exactly as `decideSubmitHandoff` and `decideAccrueCost` already write theirs out, and the
+helper was deleted rather than left with one caller. The pinned violation texts are byte-identical either way.
 
 Corollary, learned the hard way in review: **do not add a field or an Event variant a rule does not
 yet update.** An always-zero `spent` is a lie the type system endorses; Task 7 brings the field and
@@ -546,6 +568,139 @@ The Meter's other two Gaps are the same kind and are recorded at the top of `met
 says the Meter accounts **tokens** and cost, per Pane, per Mission and per **Combination**, and neither
 tokens nor Combination has a source in this PRD — the `AgentRunner` port reports a cost and nothing
 else, and there is no Combination aggregate.
+
+### A `?: never` on a discriminated union is not the exclusion it looks like
+
+Recorded above, from Task 3: "the exclusion has to be written down — `gateId?: never` on the member that
+must not carry one". **Falsified in Task 8 and it is wrong.** Delete `gateId?: never` from `Halt` and
+`{ reason: "cap-reached", gateId }` *still* fails to compile; the same holds for `reason?: never` on
+`GateDecision`'s `approved`. Excess-property checking accepts a property any member declares only when the
+union has no discriminant — where the members are discriminated, TypeScript narrows to the member the
+discriminant selects and checks the excess property against **that member alone**.
+
+So the guarantee is **the member not declaring the field**, and it is falsified by widening the member
+(`reason?: never` → `reason?: string`; `gateId?: never` → `gateId?: GateId`), which is what makes both probes
+report `TS2578`. Deleting the `?: never` instead produces either nothing at all (`GateDecision`) or
+unrelated collateral (`Halt`, because two tests read `halt.gateId` off the un-narrowed union).
+
+Both `?: never` members are kept, for the one thing they do buy: the field can be *read* off the un-narrowed
+union and is `undefined` on the member that has none, instead of being a compile error at every reading site.
+That is a convenience, not an invariant, and the comment on each now says so.
+
+The general lesson is the one this file already teaches about probes, applied to a falsification: **a
+falsification that reports nothing has not proven the guarantee absent — it has proven you broke the wrong
+thing.** Find what actually carries the load before concluding either way.
+
+### A Command that is only reachable from a hand-written log is not delivered
+
+Nothing produced a `gate-open` halt before Task 8: Task 3's tests folded the fact by hand. Leaving it that
+way was the tempting minimum — the Gate rules would all be *testable* — and it fails a criterion nobody
+would notice until Task 9: an accept path no sequence of Commands can reach is not reachable by a Surface
+either, so criterion 6 would have been proven only against a state the engine cannot arrive at, and the
+end-to-end run of criterion 13 could not contain a Gate at all.
+
+So `raise-gate` exists, and the rule for deciding that is worth keeping: **the domain does not have to know
+*when* something is due in order to own *what it does*.** A Gate is declared by a Combination and there is no
+Combination aggregate, exactly as a cost comes from a runtime and there is no price list — in both cases the
+intent arrives as a Command and the domain owns the consequence. What that rules out is the opposite move:
+an Event with no producer, which is the same lie as an always-zero field.
+
+### Kill is not a Gate decision, and that is what gave the Cap halt an exit
+
+The PRD lists three human answers at a Gate — approve, revise, kill — and only the first two answer the
+Gate's *question*. Killing is a decision about the **Mission**, so it is `kill-mission`, accepted while a
+Mission is running or halted, whichever halt stopped it. Routed through `decide-gate` it would have broken in
+two directions at once: a Mission running away, delegating and spending, could not be stopped, and a Mission
+halted at its **Cap** could never be ended — Task 7 left that halt exactly one exit, authorise more money, so
+a human who did not want to spend more had nothing to say.
+
+Two consequences worth not rediscovering:
+
+- **A kill leaves the open Gate open.** Nobody answered it. Marking it decided would put an answer on the
+  record that no human gave, and a Replay would show a checkpoint passed instead of a Mission abandoned at
+  it.
+- **`accrue-cost` and `kill-mission` are the two Commands a Mission stopped at its Cap still accepts**, for
+  opposite reasons: the accrual because the money is already gone and refusing the report would only make the
+  Meter understate what the Mission cost, the kill because ending a Mission spends nothing. Neither
+  commissions work, which is the line `stoppedAtCap` draws — and it is why the Cap is not consulted by either.
+
+### The same answer to the authorship question, in three places now
+
+`CapAuthorised` records no authoriser (Task 7). `GateDecided` records no decider and `MissionKilled` records
+no killer (Task 8), for the identical reason and deliberately not for a different one: nothing in `engine/`
+names a human — the Core is a capability set, a Zord is an id with a Harness — so an author would be a claim
+no rule could check. All three are **one** declared Gap with three sites, and each has a `@ts-expect-error`
+probe pinning the absence, so whoever adds an actor model deletes the directives in one change instead of
+finding two of the three.
+
+The rule generalises: when a second and third fact meet a question an earlier task already answered, answer
+it the same way or explain why it differs. Two facts about the same missing concept, answered differently, is
+drift that nobody will notice until both are load-bearing.
+
+### Openness is the absence of an answer — for the third time
+
+`Delegation.handoff` (Task 6), and now `Gate.decision`: optional, present exactly when something answered.
+The alternatives were rejected for the reasons already recorded, and the key-set assertion is what keeps them
+rejected — `gate.test.ts` pins `["id", "question", "raisedAt"]`, so adding a `status` or a `decidedAt` fails.
+
+The pattern is now stable enough to state as a default: **a thing that waits for an answer carries the answer
+optionally and nothing else.** No `status` whose only value is the one it starts with, no Instant beside the
+answer that can be present while the answer is absent.
+
+### Two readings of one truth must be made to agree in `decide`, not chosen between
+
+A Gate is open in two places: the halt (`halt.reason === "gate-open"` with its GateId) and the undecided
+entry in the Mission's `gates`. Task 7's precedent said pick the fact — "the halt is the fact, not the
+arithmetic" — and following it blindly produced a real bug, caught reviewing the delivery rather than by a
+test: on a state where the halt names a Gate the Mission never raised, `decide` accepted the answer and
+`evolve` then ignored it, because there was no record to annotate. A Decision the fold drops on the floor
+breaks the one property this whole design exists for.
+
+The resolution is not to elect an authority but to **require the two to agree**, in `decide`: the halt must
+say gate-open, the id must match, *and* the Mission must hold that Gate open. That makes the record
+load-bearing instead of decorative, and it is a checklist item for any future field that duplicates a
+reading — `spent` on the Mission and on its Delegations is the other one, and it is safe only because one
+rule writes both from one fact.
+
+The general form, which is worth checking on every new Command: **enumerate what `evolve` ignores, and make
+`decide` refuse exactly that set.** Both directions are bugs — accepting what the fold drops, and refusing
+what the fold would have applied.
+
+### Guarding a field in the fold depends on what the fold does with it
+
+`applyGateRaised` refuses a blank question and `applyKilled` copies a blank reason, and the difference is
+deliberate. `CLAUDE.md` already records three grades of cast-tolerance by what the rule *does* with the
+value (copy, dereference, compute); this adds a fourth axis, what the **state** does with it:
+
+- `applyGateRaised` **appends to a list that is read afterwards** — `openGateIn` and `revisionsIn` are
+  readings a Surface renders, and a Gate that asks nothing would sit in them forever, because the Mission
+  stays halted until somebody answers a question nobody can read.
+- `applyKilled` **writes a terminal field**. A killed Mission with a blank reason is poorer history, and it
+  is still complete: ignoring the fact instead would leave a Mission running that a log says ended, which is
+  worse than a missing sentence.
+
+`decide` refuses both, so neither is reachable except from a hand-written log.
+
+### A test helper's default parameter can swallow the case under test
+
+Three of the four failures in Task 8's first green run came from one mistake: `deciding(decision = { kind:
+"approved" })` and `gateDecided(decision = { kind: "approved" })`, called as `deciding(undefined as unknown as
+GateDecision)` to prove that a decision forced past the compiler is refused. A default parameter fires on
+`undefined`, so the test built a **perfectly valid approval** and then asserted a Refusal. It failed loudly
+here; the dangerous version is the one that passes.
+
+So: **a probe about a missing or malformed field is written out inline, never through a fixture with
+defaults.** The fourth failure was the same class of self-inflicted honesty check in the other direction —
+`expect(rejected).toThrow(TypeError)` on `state.gates.push(...)`, which does not throw, because no list on a
+Mission is frozen (`delegations` is not either). The frozen things are the readings handed *out*: `meterOf`,
+`harness()`, `handoff()`, `gap()`.
+
+### Two identity checks in a test need the same object
+
+`expect(evolve(running(), fact)).toBe(running())` can never pass: `running()` builds a fresh Mission on every
+call, and `toBe` is `Object.is`. Hold it in a `const` first. Vitest's message for this is
+`serializes to the same string` with `Compared values have no visual difference`, which reads like a
+serialisation quirk and is in fact the assertion being wrong.
 
 ### Vitest boundaries
 

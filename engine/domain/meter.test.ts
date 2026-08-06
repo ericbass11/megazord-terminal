@@ -472,7 +472,16 @@ describe("a Mission stopped at its Cap refuses to continue", () => {
     expect(alreadyOpen.reason).toBe("illegal-transition");
     expect(alreadyOpen.violations.join(" ")).toMatch(/a Mission is opened once/);
 
-    const noGate = refusalOf(decide(stopped(), { kind: "decide-gate", occurredAt: LATER, gateId: GATE }));
+    // Task 8 gave `decide-gate` a decision to carry: approving is as valid a decision as this Command can
+    // hold, which is what makes the Refusal below provably about there being no Gate to decide.
+    const noGate = refusalOf(
+      decide(stopped(), {
+        kind: "decide-gate",
+        occurredAt: LATER,
+        gateId: GATE,
+        decision: { kind: "approved" },
+      }),
+    );
     expect(noGate.reason).toBe("illegal-transition");
     expect(noGate.violations.join(" ")).toMatch(/no Gate is open/);
   });

@@ -78,12 +78,23 @@ export {
 } from "./domain/meter";
 
 export {
+  decisionOf,
+  isOpenGate,
+  openGateIn,
+  revisionsIn,
+  type Gate,
+  type GateDecision,
+} from "./domain/gate";
+
+export {
   InvalidInstantError,
   instant,
   instantFromDate,
   type CapAuthorised,
   type CostAccrued,
   type Delegated,
+  type GateDecided,
+  type GateRaised,
   type HandoffAccepted,
   type Instant,
   type MissionDelivered,
@@ -99,9 +110,11 @@ export type {
   DecideGate,
   Delegate,
   DeliverMission,
+  KillMission,
   MissionCommand,
   OpenMission,
   OpenMissionFields,
+  RaiseGate,
   SubmitHandoff,
 } from "./domain/commands";
 

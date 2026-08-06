@@ -121,6 +121,16 @@ _Avoid_: rejection, reproval, block
 A checkpoint where the Mission stops and waits for a human decision.
 _Avoid_: approval, checkpoint, review, validation
 
+**Gate decision**:
+The human answer to an open Gate: approve, and the Mission resumes as it was, or revise with a reason,
+and the reason returns as context. Not a Decision, which is what the domain answers a Command with.
+_Avoid_: sign-off, gate result
+
+**Kill**:
+The human decision to end a Mission with no Delivery. Available while it is running or stopped,
+whichever stopped it, and it answers no Gate — it ends the Mission the Gate asked about.
+_Avoid_: cancel, abort
+
 **Delivery**:
 The consolidated outcome of a Mission, with proof that it works.
 _Avoid_: deploy, release, product
@@ -203,6 +213,8 @@ in conversation, right is what is written in code and in every artifact.
 | lacuna         | `Gap`         |
 | recusa         | `Refusal`     |
 | gate           | `Gate`        |
+| decisão de gate | `Gate decision` |
+| matar          | `Kill`        |
 | entrega        | `Delivery`    |
 | workspace      | `Workspace`   |
 | córtex         | `Cortex`      |

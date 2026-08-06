@@ -24,22 +24,27 @@
  *
  * ## Scope of this task
  *
- * This file delivers the lifecycle skeleton, Delegation and the Contract judgement of a Handoff. The
- * remaining rule clusters are deliberately absent and are refused rather than guessed at — see
- * `unmodelled` below:
+ * Every rule cluster the lifecycle refuses on behalf of a later task is now here. There is no
+ * `unmodelled` helper any more: Task 3 shipped one, which refused `illegal-transition` for a Command the
+ * lifecycle admitted but whose rule nobody had written yet, and Tasks 4, 6 and 8 each replaced exactly one
+ * of its calls with an accept path. Task 8 replaced the last one, so the helper was removed — a function
+ * with no callers is dead weight, and leaving it would invite the next task to reach for it instead of
+ * modelling something.
  *
- * | Cluster                          | Task | State  |
- * | -------------------------------- | ---- | ------ |
- * | Delegation mechanics             | 4    | here   |
- * | Harness resolution               | 5    | done   |
- * | Contract validation of a Handoff | 6    | here   |
- * | Cost accrual and Cap enforcement | 7    | here   |
- * | Gate decisions                   | 8    | absent |
+ * | Cluster                          | Task | State |
+ * | -------------------------------- | ---- | ----- |
+ * | Delegation mechanics             | 4    | here  |
+ * | Harness resolution               | 5    | done  |
+ * | Contract validation of a Handoff | 6    | here  |
+ * | Cost accrual and Cap enforcement | 7    | here  |
+ * | Gate, and the kill that ends a Mission | 8 | here |
  * | Replay projection                | 9    | absent |
  *
- * A Delegation still carries no `status`, for the reason recorded under `Delegation` below. What it
- * does carry, since Task 7, is `spent` — and the Mission carries one too: the field and the accrual
- * that moves it arrived together, which is why neither existed before.
+ * A Delegation still carries no `status`, for the reason recorded under `Delegation` below, and neither
+ * does a Gate: both are open exactly while nothing has answered them. What a Delegation does carry, since
+ * Task 7, is `spent` — and the Mission carries one too: the field and the accrual that moves it arrived
+ * together, which is why neither existed before. Task 8's `gates` arrived with `raise-gate` for the same
+ * reason.
  */
 
 import type { Core, OrchestrationCapabilityName } from "./capability";
@@ -58,10 +63,16 @@ import { InvalidHarnessError, resolveHarness, type Harness, type HarnessSources 
 // never throws. `contract.ts` imports nothing from this file.
 import { validateHandoff, type Contract } from "./contract";
 import type { Handoff } from "./handoff";
+// A value import: `decisionOf` reads a Gate decision that may have arrived through a cast, and both
+// `decide` and `evolve` consult it so they cannot disagree about what they will not record. `gate.ts`
+// imports nothing from this file at runtime.
+import { decisionOf, isOpenGate, type Gate } from "./gate";
 import type {
   CapAuthorised,
   CostAccrued,
   Delegated,
+  GateDecided,
+  GateRaised,
   HandoffAccepted,
   Instant,
   MissionDelivered,
@@ -76,9 +87,11 @@ import type {
   DecideGate,
   Delegate,
   DeliverMission,
+  KillMission,
   MissionCommand,
   OpenMission,
   OpenMissionFields,
+  RaiseGate,
   SubmitHandoff,
 } from "./commands";
 
@@ -273,6 +286,19 @@ type OpenedFields = {
    * same fact, so they cannot drift; `meter.test.ts` pins that they agree.
    */
   readonly spent: Money;
+  /**
+   * The Gates this Mission raised, in the order it raised them, each carrying the answer it got.
+   *
+   * The **record** of what was asked and answered — not a queue of pending checkpoints. What makes a Gate
+   * block is the halt on the Mission (`halt.reason === "gate-open"`), and at most one Gate is ever open
+   * because raising one halts the Mission and a halted Mission raises none. See `gate.ts` for why
+   * concurrent Gates were rejected rather than forgotten.
+   *
+   * It is here rather than only in the Event log because a revision reason has to be *readable* by
+   * whoever resumes: "revise with a reason" is theatre if the reason only exists in a fold nobody has
+   * run. `revisionsIn` is that reading.
+   */
+  readonly gates: readonly Gate[];
 };
 
 /** A Mission that does not exist yet: the state every Event log starts from. */
@@ -400,8 +426,12 @@ export function decide(state: Mission, command: MissionCommand): Decision {
       return decideAccrueCost(state, command);
     case "authorise-cap":
       return decideAuthoriseCap(state, command);
+    case "raise-gate":
+      return decideRaiseGate(state, command);
     case "decide-gate":
       return decideDecideGate(state, command);
+    case "kill-mission":
+      return decideKillMission(state, command);
     default:
       // Unreachable while every member of `MissionCommand` is handled above — which is what the
       // `never` parameter enforces at compile time. A value that got here was forced past the type
@@ -430,7 +460,7 @@ function decideOpenMission(state: Mission, command: OpenMission): Decision {
  * tokens, so a Mission that concluded itself while stopped at its Cap would spend money nobody
  * authorised — and the halt would not be a halt if the Mission could still perform its one terminal
  * transition. A human who wants a Mission at its Cap to end either authorises enough Cap to consolidate
- * it, or kills it (Task 8).
+ * it, or kills it — `kill-mission`, which Task 8 added for exactly this dead end.
  */
 function decideDeliverMission(state: Mission, command: DeliverMission): Decision {
   if (state.status !== "running" || stoppedAtCap(state)) {
@@ -769,21 +799,195 @@ function decideAuthoriseCap(state: Mission, command: AuthoriseCap): Decision {
   return accepted([authorised]);
 }
 
-function decideDecideGate(state: Mission, command: DecideGate): Decision {
-  const open = openGateOf(state);
+/**
+ * Raises a Gate: stops the Mission, and records the question a human is being asked.
+ *
+ * Two facts, in one Decision: the `GateRaised` that records the question, and the `MissionHalted` that
+ * stops the Mission at it. The same shape an accrual that reaches the Cap produces, and for the same
+ * reason — halting is one fact kind whatever caused it, so the fold has one place where a Mission stops.
+ *
+ * Three rules:
+ *
+ * 1. **The question must say something.** A Gate that asks nothing stops the Mission for no stated
+ *    purpose, and the human it wakes up has nothing to answer. Refused `illegal-transition`, like Task 6's
+ *    Handoff-less `submit-handoff` and Task 7's cost-less `accrue-cost`.
+ * 2. **The GateId must be free.** Two Gates under one id cannot be folded deterministically, and an answer
+ *    naming that id could not say which question it answered. Refused `illegal-transition`, exactly as a
+ *    reused DelegationId is.
+ * 3. **The Mission must be running.** A Mission that is already stopped is already waiting for a human, and
+ *    raising a Gate on it would replace one question with another — the Cap halt would vanish and the
+ *    money nobody authorised would never be asked about again. A terminal Mission has nothing left to
+ *    stop.
+ *
+ * **The Cap is deliberately not consulted.** `stoppedAtCap` guards the Commands that *commission* work;
+ * raising a Gate commissions nothing and spends nothing, so a running Mission that has spent its whole Cap
+ * may still be stopped and asked a question. That is also why a Cap-halted Mission is refused
+ * `illegal-transition` here rather than `cap-reached`: what stands in the way is that the Mission is
+ * already stopped, not the Cap — and Task 7's rule is that `cap-reached` is right only when the Cap is what
+ * stands in the way.
+ */
+function decideRaiseGate(state: Mission, command: RaiseGate): Decision {
+  const question = saidOf(command.question);
+  if (question === undefined) {
+    return refused("illegal-transition", [
+      `a Gate stops the Mission to ask a human something, so a raise-gate Command must carry the ` +
+        `question it asks, and this one does not`,
+    ]);
+  }
 
-  if (open === undefined) {
+  const alreadyUsed =
+    findGate(state, command.gateId) === undefined
+      ? []
+      : [
+          `Gate "${command.gateId}" was already raised in this Mission, ` +
+            `and a Mission raises each one once`,
+        ];
+
+  if (state.status !== "running") {
+    return refused("illegal-transition", [
+      `a Mission that is ${describe(state)} raises no Gate`,
+      ...alreadyUsed,
+    ]);
+  }
+  if (alreadyUsed.length > 0) {
+    return refused("illegal-transition", alreadyUsed);
+  }
+
+  const raised: GateRaised = {
+    kind: "gate-raised",
+    missionId: state.id,
+    occurredAt: command.occurredAt,
+    gateId: command.gateId,
+    question,
+  };
+  const halt: MissionHalted = {
+    kind: "mission-halted",
+    missionId: state.id,
+    occurredAt: command.occurredAt,
+    halt: { reason: "gate-open", gateId: command.gateId },
+  };
+  return accepted([raised, halt]);
+}
+
+/**
+ * Answers the Gate the Mission is waiting on, and lets it go on.
+ *
+ * Both answers resume the Mission, and they differ only in what is recorded:
+ *
+ * - **approve** — it carries on as it was.
+ * - **revise, with a reason** — it carries on too, with the reason on the record. It has to resume, or
+ *   nothing could act on the reason; and the reason is context, not a new Briefing, because a Mission is
+ *   opened once from one Briefing and rewriting it would erase what the Mission was for. `revisionsIn` is
+ *   how whoever resumes reads what it was told.
+ *
+ * Four rules, and the first two are Task 3's, unchanged:
+ *
+ * 1. **A Gate must be open**, which is the halt saying so. Refused `illegal-transition` — and *not*
+ *    `cap-reached` on a Mission stopped at its Cap, which Task 7 argued and this task keeps: a Cap halt
+ *    carries no GateId, so there is genuinely no Gate to decide, and answering "the Cap" would send a
+ *    human to the wrong remedy.
+ * 2. **It must be the Gate this Command names.** An answer that applied to whatever the Mission happened
+ *    to be waiting on would let a human approve a question they never read.
+ * 3. **The Mission must hold that Gate, open.** The halt and the `gates` record have to agree; when they do
+ *    not, only a hand-written log put them that way, and `evolve` would have nowhere to record the answer.
+ * 4. **The decision must be one this domain can record.** Checked after the three above, because those are
+ *    about *which* Gate and this is about the answer: read through `decisionOf`, which never throws and
+ *    which `evolve` consults too, so a decision one of them would drop is dropped by both.
+ *
+ * Killing is not here: it ends the Mission rather than answering the question, and it is a Command of its
+ * own for the reasons in `KillMission`. A killed Mission leaves its Gate unanswered, which is the truth.
+ */
+function decideDecideGate(state: Mission, command: DecideGate): Decision {
+  // "A Gate is open" is the halt saying so, and the condition is written out here rather than read off a
+  // helper: an aliased compound check does not narrow, and `state.id` below has to be the compiler's
+  // knowledge rather than a cast. Task 3 could afford the helper because its refusal path never touched
+  // the state; the accept path does.
+  if (state.status !== "halted" || state.halt.reason !== "gate-open") {
     return refused("illegal-transition", [
       `no Gate is open on a Mission that is ${describe(state)}, ` +
         `so Gate "${command.gateId}" cannot be decided`,
     ]);
   }
-  if (open !== command.gateId) {
+  if (state.halt.gateId !== command.gateId) {
     return refused("illegal-transition", [
-      `Gate "${command.gateId}" is not open: this Mission is waiting on Gate "${open}"`,
+      `Gate "${command.gateId}" is not open: ` +
+        `this Mission is waiting on Gate "${state.halt.gateId}"`,
     ]);
   }
-  return unmodelled("decide-gate", state);
+  // The halt and the record have to agree, and this is what makes them. A halt naming a Gate the Mission
+  // never raised — or one it already answered — is reachable only from a hand-written log, and `evolve` has
+  // nowhere to put the answer, so accepting it here would produce a Decision the fold drops on the floor.
+  // `decide` and `evolve` refusing the same thing is what keeps a fold equal to the sequence of Decisions
+  // that produced it, and it is why the record is load-bearing rather than decorative.
+  const open = findGate(state, command.gateId);
+  if (open === undefined || !isOpenGate(open)) {
+    return refused("illegal-transition", [
+      `Gate "${command.gateId}" is not recorded as open on this Mission, so there is nothing to decide`,
+    ]);
+  }
+
+  const decision = decisionOf(command.decision);
+  if (decision === undefined) {
+    return refused("illegal-transition", [
+      `a Gate is decided by approving it or by asking for a revision that says why, ` +
+        `and this decide-gate Command carries neither`,
+    ]);
+  }
+
+  const decided: GateDecided = {
+    kind: "gate-decided",
+    missionId: state.id,
+    occurredAt: command.occurredAt,
+    gateId: command.gateId,
+    decision,
+  };
+  return accepted([decided]);
+}
+
+/**
+ * Ends the Mission with no Delivery.
+ *
+ * ## The exit a Mission stopped at its Cap did not have
+ *
+ * Task 7 left a Cap halt exactly one way out — an authorisation that raises the Cap — so a human who did
+ * not want to spend more had nothing to say. This is the other answer to "how much more?": none, and stop.
+ * It is therefore accepted on a **halted** Mission whichever halt stopped it, and on a running one, which
+ * is what makes a Mission that is delegating and spending stoppable at all.
+ *
+ * That makes two Commands a Mission stopped at its Cap still accepts, for opposite reasons, and the pair is
+ * coherent: `accrue-cost` because the money is already gone and refusing the report would only make the
+ * Meter lie, and `kill-mission` because ending the Mission spends nothing. Neither commissions work, which
+ * is the line `stoppedAtCap` draws — and it is why the Cap is not consulted here at all.
+ *
+ * ## What it refuses
+ *
+ * - **A Command carrying no reason.** "Why did this stop" is the one question a Replay of a killed Mission
+ *   exists to answer. Refused `illegal-transition`.
+ * - **A Mission that is not open yet, or already over.** There is nothing to end, and a second kill would
+ *   only rewrite why the first one happened. Refused `illegal-transition` — the Cap is not what blocks it,
+ *   and neither is a Gate.
+ */
+function decideKillMission(state: Mission, command: KillMission): Decision {
+  const reason = saidOf(command.reason);
+  if (reason === undefined) {
+    return refused("illegal-transition", [
+      `ending a Mission with no Delivery is worth recording, so a kill-mission Command must carry ` +
+        `the reason it was ended for, and this one does not`,
+    ]);
+  }
+  if (state.status !== "running" && state.status !== "halted") {
+    return refused("illegal-transition", [
+      `a Mission that is ${describe(state)} cannot be killed`,
+    ]);
+  }
+
+  const killed: MissionKilled = {
+    kind: "mission-killed",
+    missionId: state.id,
+    occurredAt: command.occurredAt,
+    reason,
+  };
+  return accepted([killed]);
 }
 
 /* -------------------------------------------------------------------------------------------------
@@ -825,6 +1029,14 @@ export function evolve(state: Mission, event: MissionEvent): Mission {
         ? applyCapAuthorised(state, event)
         : state;
 
+    // A Gate is raised on a running Mission and nothing else. The halt that stops it is the other fact of
+    // the same Decision, so this one only records the question.
+    case "gate-raised":
+      return state.status === "running" ? applyGateRaised(state, event) : state;
+
+    case "gate-decided":
+      return state.status === "halted" ? applyGateDecided(state, event) : state;
+
     case "mission-halted":
       return state.status === "running" ? applyHalted(state, event) : state;
 
@@ -855,6 +1067,7 @@ function applyOpened(event: MissionOpened): RunningMission {
     openedAt: event.occurredAt,
     delegations: [],
     spent: ZERO_MONEY,
+    gates: [],
   };
 }
 
@@ -991,6 +1204,69 @@ function applyHandoffAccepted(state: RunningMission, event: HandoffAccepted): Ru
   };
 }
 
+/**
+ * Records the Gate the fact describes, still open.
+ *
+ * Two facts are ignored rather than applied, because `evolve` is total and folds whatever log it is handed
+ * while `decide` produces neither: a second Gate under an id the Mission already holds — the same rule
+ * `applyDelegated` follows, so the fold cannot depend on how many copies of a fact the log carried — and a
+ * Gate whose question says nothing, which `decide` refuses, so the two agree.
+ *
+ * It does not halt the Mission. The `MissionHalted` beside it does, which is what keeps every halt in one
+ * place in the fold.
+ */
+function applyGateRaised(state: RunningMission, event: GateRaised): RunningMission {
+  if (findGate(state, event.gateId) !== undefined) {
+    return state;
+  }
+  const question = saidOf(event.question);
+  if (question === undefined) {
+    return state;
+  }
+  return {
+    ...state,
+    gates: [...state.gates, { id: event.gateId, question, raisedAt: event.occurredAt }],
+  };
+}
+
+/**
+ * Records the answer on the Gate it answers, and returns the Mission to running.
+ *
+ * One fact, two changes, in one place — the arrangement `applyCapAuthorised` uses for the Cap halt, and the
+ * reason a decided Gate cannot end up recorded on a Mission that is still stopped.
+ *
+ * It applies **only** to the Gate halt this Mission is actually waiting on, and it re-checks the decision
+ * through `decisionOf`. Three facts are therefore ignored, and each of them is a way a hand-written log
+ * could otherwise walk a Mission somewhere `decide` would never take it:
+ *
+ * - a decision for a Gate that is not the open one, or on a Mission halted at its **Cap** — a Cap halt is
+ *   answered by money, and this is the mirror of `applyCapAuthorised` leaving a Gate halt alone;
+ * - a decision for a Gate that was already answered, which would let the second answer overwrite the first;
+ * - a decision this domain cannot record, which `decide` refuses too.
+ */
+function applyGateDecided(
+  state: HaltedMission,
+  event: GateDecided,
+): RunningMission | HaltedMission {
+  if (state.halt.reason !== "gate-open" || state.halt.gateId !== event.gateId) {
+    return state;
+  }
+  const answered = findGate(state, event.gateId);
+  if (answered === undefined || !isOpenGate(answered)) {
+    return state;
+  }
+  const decision = decisionOf(event.decision);
+  if (decision === undefined) {
+    return state;
+  }
+
+  return {
+    ...openedFieldsOf(state),
+    gates: state.gates.map((gate) => (gate.id === event.gateId ? { ...gate, decision } : gate)),
+    status: "running",
+  };
+}
+
 function applyHalted(state: RunningMission, event: MissionHalted): HaltedMission {
   return { ...openedFieldsOf(state), status: "halted", halt: event.halt };
 }
@@ -1048,21 +1324,24 @@ function refused(reason: RefusalReason, violations: readonly string[]): Decision
 }
 
 /**
- * Refuses a Command the lifecycle admits but whose rule is not modelled yet.
+ * Reads a required piece of text without trusting its type, answering `undefined` when it says nothing.
  *
- * Only the Gate decision is left: Task 4 replaced the `delegate` call with its accept path, Task 6
- * replaced the `submit-handoff` one, and each changed nothing else. Until Task 8 lands, the engine
- * refuses rather than inventing an accept path that would have to be rewritten — and a guessed
- * acceptance is exactly the drift this domain exists to prevent.
+ * The same threat model and the same shape as `amountOf` in `meter.ts` and `decisionOf` in `gate.ts`: a
+ * `string` field can arrive blank from a human, or as something that is not a string at all through a cast
+ * or a `JSON.parse`, and `decide` and `evolve` are both contractually non-throwing. Three fields go
+ * through it — a Gate's question, and the reason on a kill — and the two callers do the truthful thing with
+ * the `undefined`: `decide` refuses, `evolve` ignores.
  *
- * `"illegal-transition"` is the truthful reason: the state machine has no such transition. When the
- * owning task adds one, it replaces this call with its accept path, and the Refusal stops being
- * reachable from the states that now admit the Command. Nothing else about this file changes.
+ * Blankness is refused for the reason `briefing()` and `slice()` refuse it: a question nobody can read
+ * stops a Mission for nothing, and a kill with no reason is the one fact a killed Mission's Replay is read
+ * for. Neither is trimmed — what a human wrote is what is recorded.
  */
-function unmodelled(kind: MissionCommand["kind"], state: Mission): Decision {
-  return refused("illegal-transition", [
-    `a Mission that is ${describe(state)} has no "${kind}" transition in this engine yet`,
-  ]);
+function saidOf(claimed: string): string | undefined {
+  const value: unknown = claimed;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return undefined;
+  }
+  return value;
 }
 
 /** The Delegations a Mission remembers. None, before it was opened. */
@@ -1080,6 +1359,23 @@ function delegationsOf(state: Mission): readonly Delegation[] {
  */
 function findDelegation(state: Mission, id: DelegationId): Delegation | undefined {
   return delegationsOf(state).find((delegation) => delegation.id === id);
+}
+
+/** The Gates a Mission remembers. None, before it was opened. */
+function gatesOf(state: Mission): readonly Gate[] {
+  return isOpened(state) ? state.gates : [];
+}
+
+/**
+ * The Gate a Mission remembers under an id, or `undefined` when it raised none.
+ *
+ * One lookup, shared by the rule that refuses a reused GateId and the folds that record an answer or ignore
+ * a duplicated `GateRaised`. It is **not** what decides whether a Gate is open: that is the halt, so a
+ * Gate answered while the Mission was somehow not halted cannot be answered twice by two different
+ * readings.
+ */
+function findGate(state: Mission, id: GateId): Gate | undefined {
+  return gatesOf(state).find((gate) => gate.id === id);
 }
 
 /** The Capability a Core must hold to delegate. Typed against the registry, so a rename breaks here. */
@@ -1171,8 +1467,8 @@ function contractViolationsOf(reference: Contract, submitted: Handoff): readonly
  *   Cap would be enforceable only through the halt and a Mission could walk around it.
  *
  * A Mission halted at a **Gate** is deliberately not included, even when its Meter has passed the Cap: the
- * Gate is the nearer question, and a Gate is not answered with money. Once Task 8 resumes it, the second
- * case above catches it on the next Command.
+ * Gate is the nearer question, and a Gate is not answered with money. Once a Gate decision resumes it, the
+ * second case above catches it on the next Command — `gate.test.ts` proves that hand-over.
  *
  * This is the one predicate `cap-reached` refusals and `authorise-cap` both consult, so what the Cap
  * blocks and what an authorisation unblocks cannot drift apart.
@@ -1229,14 +1525,6 @@ function stateBlock(state: Mission, admits: string): StateBlock {
   };
 }
 
-/** The Gate a Mission is waiting on, or `undefined` when none is open. */
-function openGateOf(state: Mission): GateId | undefined {
-  if (state.status === "halted" && state.halt.reason === "gate-open") {
-    return state.halt.gateId;
-  }
-  return undefined;
-}
-
 /**
  * The state's shared fields, copied out by name.
  *
@@ -1253,6 +1541,7 @@ function openedFieldsOf(state: OpenedMission): OpenedFields {
     openedAt: state.openedAt,
     delegations: state.delegations,
     spent: state.spent,
+    gates: state.gates,
   };
 }
 

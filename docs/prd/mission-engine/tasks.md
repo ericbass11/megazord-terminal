@@ -96,12 +96,12 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 8 — Gate
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: a Gate blocks progress until decided; approve, revise-with-reason and kill paths.
 - **Touches**: `engine/domain/gate.ts`, `mission.ts` and tests
 - **Depends on**: 3
 - **Verification**: `gate.test.ts` covers criterion 6: commands refused while a Gate is open,
-  approval resumes, revise returns the reason as context, kill terminates the Mission.
+  a decision to proceed resumes it, revise returns the reason as context, kill terminates the Mission.
 
 ## Task 9 — Replay, AgentRunner port and fake adapter, end-to-end
 

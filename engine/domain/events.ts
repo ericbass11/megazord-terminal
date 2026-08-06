@@ -11,22 +11,21 @@
  * browser file is a bug waiting to happen. The term stays `Event` in prose; the symbol is
  * `MissionEvent`. The same applies to `MissionCommand` in `commands.ts`.
  *
- * One fact in this union has no Command behind it yet, and that is deliberate:
- *
- * - `MissionKilled` is produced by a Gate decision (Task 8).
- *
- * The lifecycle folds it today because a state machine that cannot represent a killed Mission cannot
- * refuse anything on one, and refusing on one is what the lifecycle task delivered. `MissionHalted`
- * was in the same position until Task 7 gave it its first producer: an accrual that reaches the Cap.
- * A Gate opening (Task 8) will be its second.
+ * Every fact in this union now has a Command that produces it. Two of them waited for one: `MissionHalted`
+ * was folded but unproduced until Task 7 gave it an accrual that reaches the Cap, and Task 8 gave it its
+ * second producer, a Gate being raised; `MissionKilled` was folded but unproduced until Task 8 gave it
+ * `kill-mission`. The lifecycle folded both from the start because a state machine that cannot represent a
+ * halted or a killed Mission cannot refuse anything on one, and refusing on one is what the lifecycle task
+ * delivered.
  */
 
-import type { DelegationId, MissionId, ZordId } from "./ids";
+import type { DelegationId, GateId, MissionId, ZordId } from "./ids";
 import type { Money } from "./money";
 import type { Core } from "./capability";
 import type { Harness } from "./harness";
 import type { Contract } from "./contract";
 import type { Handoff } from "./handoff";
+import type { GateDecision } from "./gate";
 // Type-only import. It is erased at compile time, so `mission.ts` importing this file back is not a
 // module cycle at runtime: the Mission vocabulary belongs to the aggregate, and a fact is written in
 // that vocabulary.
@@ -189,8 +188,9 @@ export type CostAccrued = EventOf & {
  *
  * There is deliberately no authoriser on it: this domain has no actor or identity model — the Core is
  * a capability set, and nothing else in `engine/` names a person — so a field recording who authorised
- * would be a claim no rule could check. Recorded as a Gap of Task 7; a Gate decision (Task 8) faces
- * exactly the same question and should answer it the same way, or the two will drift.
+ * would be a claim no rule could check. Recorded as a Gap of Task 7, and answered the same way by Task 8:
+ * `GateDecided` records no decider and `MissionKilled` no killer. One Gap, three sites — whoever adds an
+ * actor model adds it to all three in one change.
  */
 export type CapAuthorised = EventOf & {
   readonly kind: "cap-authorised";
@@ -198,10 +198,47 @@ export type CapAuthorised = EventOf & {
 };
 
 /**
+ * A Gate was raised on the Mission: a checkpoint, with the question a human is being asked.
+ *
+ * It carries the **question** and not a whole `Gate`, for the same reason `Delegated` carries fields
+ * rather than a `Delegation`: the record on the state is what the fold builds, and a fact that carried an
+ * absent `decision` and a `raisedAt` duplicating its own `occurredAt` would be saying the same thing
+ * twice. `evolve` builds the Gate from this, taking `raisedAt` from `occurredAt`.
+ *
+ * Raising a Gate is two facts in one Decision — this one, and the `MissionHalted` that stops the Mission —
+ * exactly as an accrual that reaches the Cap is a `CostAccrued` and a `MissionHalted`. Halting stays one
+ * fact kind whatever caused it, so the fold has one place where a Mission stops.
+ */
+export type GateRaised = EventOf & {
+  readonly kind: "gate-raised";
+  readonly gateId: GateId;
+  readonly question: string;
+};
+
+/**
+ * A human answered the Gate the Mission was waiting on, and the Mission resumes.
+ *
+ * One fact for both answers, carrying the `GateDecision`, rather than a `gate-approved` and a
+ * `revision-requested` kind: the two differ in what was said, not in what happened, and a union in one
+ * field keeps the fold with one place where a Gate is settled — the same arrangement `MissionHalted` uses
+ * for its `Halt`.
+ *
+ * Both answers resume the Mission. A revision that left it halted would be a reason nothing could act on.
+ *
+ * There is deliberately no author on it, for the reason `CapAuthorised` has none: nothing in this domain
+ * names a human. Recorded as a Gap of Tasks 7 and 8 — see `gate.ts`.
+ */
+export type GateDecided = EventOf & {
+  readonly kind: "gate-decided";
+  readonly gateId: GateId;
+  readonly decision: GateDecision;
+};
+
+/**
  * The Mission stopped and is waiting for a human.
  *
- * Produced by an accrual that reached the Cap (Task 7) and by a Gate opening (Task 8). Which of the two
- * it was is in the `Halt`, which is a union precisely so a Cap halt cannot carry a GateId.
+ * Produced by an accrual that reached the Cap (Task 7) and by a Gate being raised (Task 8). Which of the
+ * two it was is in the `Halt`, which is a union precisely so a Cap halt cannot carry a GateId.
  */
 export type MissionHalted = EventOf & {
   readonly kind: "mission-halted";
@@ -214,7 +251,14 @@ export type MissionDelivered = EventOf & {
   readonly delivery: Delivery;
 };
 
-/** The Mission was terminated without a Delivery. Terminal. Produced by a Gate kill (Task 8). */
+/**
+ * The Mission was ended with no Delivery. Terminal. Produced by `kill-mission` (Task 8).
+ *
+ * The `reason` is required and says why it was ended: it is the only thing that survives a Mission nobody
+ * delivered, and "why did this stop" is the one question a Replay of a killed Mission exists to answer.
+ *
+ * No author, for the reason `CapAuthorised` and `GateDecided` have none — see `gate.ts`.
+ */
 export type MissionKilled = EventOf & {
   readonly kind: "mission-killed";
   readonly reason: string;
@@ -232,6 +276,8 @@ export type MissionEvent =
   | HandoffAccepted
   | CostAccrued
   | CapAuthorised
+  | GateRaised
+  | GateDecided
   | MissionHalted
   | MissionDelivered
   | MissionKilled;

@@ -14,13 +14,10 @@
  * Command that had to repeat the id could disagree with it, which is a state nobody should have to
  * handle.
  *
- * One member of this union is still shaped for its refusal path only, and its payload grows in the task
- * that owns its rule:
- *
- * - `DecideGate` — Task 8 (approve, revise with a reason, kill).
- *
- * It is already here because one of the illegal transitions the lifecycle refuses is a transition *of
- * that Command*: deciding a Gate that is not open.
+ * Every member of this union now has a rule. `DecideGate` was the last one shaped for its refusal path
+ * only — it was here from Task 3 because one of the illegal transitions the lifecycle refuses is a
+ * transition *of that Command*, deciding a Gate that is not open — and Task 8 gave it the decision it
+ * carries, plus the two Commands the Gate needed beside it: `RaiseGate` and `KillMission`.
  */
 
 import type { Core } from "./capability";
@@ -30,6 +27,7 @@ import type { Instant } from "./events";
 import type { HarnessSources } from "./harness";
 import type { Contract } from "./contract";
 import type { Handoff } from "./handoff";
+import type { GateDecision } from "./gate";
 // Type-only import: erased at compile time, so there is no module cycle at runtime.
 import type { Briefing, Delivery, Mode, Slice } from "./mission";
 
@@ -139,10 +137,81 @@ export type AuthoriseCap = CommandAt & {
   readonly cap: Money;
 };
 
-/** Decide the Gate the Mission is waiting on. Approve, revise and kill: Task 8. */
+/**
+ * Raise a Gate on the Mission: stop it, and ask a human the question this Command carries.
+ *
+ * **Who submits it, and what this PRD does not model.** A Gate is declared by a Combination — the glossary
+ * says a Combination has "a declared Roster, Gates and deliverable" — and there is no Combination
+ * aggregate in `engine/`, so the domain has no way to *derive* that a Gate is due. It does not have to:
+ * whoever runs the Mission submits the intent, and the domain owns what happens next, which is the same
+ * split `accrue-cost` lives with. The domain does not decide what a Zord's run cost either; it decides
+ * what a cost does.
+ *
+ * The `question` is required and has no default. A Gate that asks nothing stops the Mission for no stated
+ * purpose, and the human it wakes up would have nothing to answer. It is checked when the Command is
+ * decided, so a blank one is refused rather than recorded.
+ *
+ * It carries no Capability requirement, unlike `delegate`. Raising a checkpoint is not the Core's own act
+ * — it is the Combination's declared stopping point, and `capability.ts` names no permission for it. A
+ * capability check against a name nobody registered would be a rule with no registry behind it.
+ */
+export type RaiseGate = CommandAt & {
+  readonly kind: "raise-gate";
+  readonly gateId: GateId;
+  readonly question: string;
+};
+
+/**
+ * Decide the Gate the Mission is waiting on: approve it, or ask for a revision that says why.
+ *
+ * The `gateId` says **which** Gate is being answered even though only one can be open, and that is the
+ * point: an answer that did not name its Gate would silently apply to whatever the Mission happened to be
+ * waiting on by the time it arrived, and a human who answered a question ten minutes ago must not
+ * accidentally approve a different one. `decide` refuses a `gateId` that is not the open Gate.
+ *
+ * The `decision` is required. A `decide-gate` that carries no decision decides nothing, and defaulting it
+ * either way would make approval — or rejection — happen by omission.
+ *
+ * Killing is **not** one of the decisions here: see `KillMission` below.
+ */
 export type DecideGate = CommandAt & {
   readonly kind: "decide-gate";
   readonly gateId: GateId;
+  readonly decision: GateDecision;
+};
+
+/**
+ * End the Mission with no Delivery.
+ *
+ * ## Why this is not a Gate decision
+ *
+ * The PRD lists three human answers at a Gate — approve, revise with a reason, kill — and the first two
+ * are answers to the Gate's *question*. Killing is not: it is a decision about the **Mission**, and
+ * routing it through `decide-gate` would have made ending a Mission depend on somebody having raised a
+ * checkpoint first. Two consequences make that untenable rather than merely inelegant:
+ *
+ * - a Mission that is **running** away, delegating and spending, could not be stopped at all;
+ * - a Mission halted at its **Cap** could never be ended. Task 7 left it exactly one exit — an
+ *   authorisation that raises the Cap — so a human who does not want to spend more had nothing to say.
+ *   This is the other answer to "how much more?": none, and stop.
+ *
+ * So all three answers remain available to a human at a Gate, and the third one is available everywhere
+ * else too. A kill does not *answer* the open Gate: the Gate stays unanswered on the record, which is the
+ * truth — the Mission it was asked about no longer exists.
+ *
+ * ## What it carries
+ *
+ * The `reason` is required, and it is the one thing that survives a Mission nobody delivered: "why did
+ * this stop" is the question a Replay of a killed Mission exists to answer, and an optional reason would
+ * make silence the easiest answer at the one moment it costs the most. No author, for the reason
+ * `CapAuthorised` has none — see `gate.ts`.
+ *
+ * It is accepted while the Mission is running or stopped, whichever stopped it, and refused on a Mission
+ * that is not open yet or already over. Ending what has already ended changes only the record of why.
+ */
+export type KillMission = CommandAt & {
+  readonly kind: "kill-mission";
+  readonly reason: string;
 };
 
 /**
@@ -158,4 +227,6 @@ export type MissionCommand =
   | SubmitHandoff
   | AccrueCost
   | AuthoriseCap
-  | DecideGate;
+  | RaiseGate
+  | DecideGate
+  | KillMission;

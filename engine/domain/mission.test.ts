@@ -6,6 +6,8 @@ import {
   type CapAuthorised,
   type CostAccrued,
   type Delegated,
+  type GateDecided,
+  type GateRaised,
   type HandoffAccepted,
   type MissionDelivered,
   type MissionEvent,
@@ -13,6 +15,7 @@ import {
   type MissionKilled,
   type MissionOpened,
 } from "@engine/domain/events";
+import type { GateDecision } from "@engine/domain/gate";
 import { harness, type Harness, type HarnessSources } from "@engine/domain/harness";
 import { clauseId, delegationId, gateId, missionId, zordId } from "@engine/domain/ids";
 import { ZERO_MONEY, moneyFromDecimal } from "@engine/domain/money";
@@ -55,6 +58,7 @@ const OPENED_AT = instant("2026-08-05T12:00:00.000Z");
 const LATER = instant("2026-08-05T13:00:00.000Z");
 
 const GATE = gateId("gate-1");
+const OTHER_GATE = gateId("gate-2");
 const DELEGATION = delegationId("delegation-1");
 const OTHER_DELEGATION = delegationId("delegation-2");
 const SCOUT = zordId("zord-scout");
@@ -146,7 +150,7 @@ function haltedAtCap(): HaltedMission {
   return expectHalted(evolve(running(), halted({ reason: "cap-reached" })));
 }
 
-/** A Mission halted the way Task 8 will halt one: at a Gate, waiting for a human. */
+/** A Mission halted the way `raise-gate` halts one (Task 8): at a Gate, waiting for a human. */
 function haltedAtGate(gate = GATE): HaltedMission {
   return expectHalted(evolve(running(), halted({ reason: "gate-open", gateId: gate })));
 }
@@ -211,6 +215,29 @@ function capAuthorised(cap = moneyFromDecimal("80.00")): CapAuthorised {
   return { kind: "cap-authorised", missionId: missionId("mission-1"), occurredAt: LATER, cap };
 }
 
+/* Task 8's two facts, as fixtures for the totality, determinism and no-clock loops below. Their own rules
+ * are proven in `gate.test.ts`. */
+
+function gateRaised(id = GATE, question = "Does the Cockpit still ship this week?"): GateRaised {
+  return {
+    kind: "gate-raised",
+    missionId: missionId("mission-1"),
+    occurredAt: LATER,
+    gateId: id,
+    question,
+  };
+}
+
+function gateDecided(id = GATE, decision: GateDecision = { kind: "approved" }): GateDecided {
+  return {
+    kind: "gate-decided",
+    missionId: missionId("mission-1"),
+    occurredAt: LATER,
+    gateId: id,
+    decision,
+  };
+}
+
 function delivered(): MissionDelivered {
   return {
     kind: "mission-delivered",
@@ -253,7 +280,25 @@ function delegating(overrides: Partial<Delegate> = {}): Delegate {
 
 const delegateCommand: MissionCommand = delegating();
 const submitHandoffCommand: MissionCommand = submitting();
-const decideGateCommand: MissionCommand = { kind: "decide-gate", occurredAt: LATER, gateId: GATE };
+// Task 8 gave `decide-gate` the decision it carries. The fixture approves, which is the decision that
+// changes the least: every assertion below it is about *which* Gate is open, not about the answer.
+const decideGateCommand: MissionCommand = {
+  kind: "decide-gate",
+  occurredAt: LATER,
+  gateId: GATE,
+  decision: { kind: "approved" },
+};
+const raiseGateCommand: MissionCommand = {
+  kind: "raise-gate",
+  occurredAt: LATER,
+  gateId: OTHER_GATE,
+  question: "The Contract changed shape. Does the Cockpit still ship this week?",
+};
+const killMissionCommand: MissionCommand = {
+  kind: "kill-mission",
+  occurredAt: LATER,
+  reason: "the Briefing was wrong",
+};
 const accrueCostCommand: AccrueCost = {
   kind: "accrue-cost",
   occurredAt: LATER,
@@ -273,7 +318,9 @@ const EVERY_COMMAND: readonly MissionCommand[] = [
   submitHandoffCommand,
   accrueCostCommand,
   authoriseCapCommand,
+  raiseGateCommand,
   decideGateCommand,
+  killMissionCommand,
 ];
 
 const EVERY_EVENT: readonly MissionEvent[] = [
@@ -282,6 +329,8 @@ const EVERY_EVENT: readonly MissionEvent[] = [
   handoffAccepted(),
   costAccrued(),
   capAuthorised(),
+  gateRaised(),
+  gateDecided(),
   halted({ reason: "cap-reached" }),
   halted({ reason: "gate-open", gateId: GATE }),
   killed(),

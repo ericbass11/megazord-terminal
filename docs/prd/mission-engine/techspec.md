@@ -181,7 +181,7 @@ ADR.
 | 3  | `contract.test.ts` + `mission.test.ts`: refused Handoff, with violations listed |
 | 4  | `harness.test.ts`: one case per precedence level winning, field by field |
 | 5  | `meter.test.ts`: accrual crossing the Cap halts; next command refused `cap-reached` |
-| 6  | `gate.test.ts`: blocked until decided; approve, revise, kill paths |
+| 6  | `gate.test.ts`: blocked until decided; proceed, revise and kill paths, kill routed as its own Command |
 | 7  | `replay.test.ts`: fold equality — `replay(events)` equals the state built command by command |
 | 8  | `tools/glossary-check.test.ts` over `engine/` and `docs/prd/` |
 | 9  | `tools/prd-structure.test.ts` over `docs/prd/*/` |
