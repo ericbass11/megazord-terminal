@@ -1809,6 +1809,67 @@ one half of a discriminated pair, **the other half is where it is missing**, and
 reading dereferences a field" was a comment in the source that had been false since the day it was
 written.
 
+### The stdio transport of a control plane is a bridge, not a second control plane
+
+A Zord runs **inside a Pane**, so its own stdio is the pseudoterminal a human is watching. That kills
+the obvious reading of "stdio transport" three times: the human would watch protocol instead of work,
+the CLI's prose and ANSI would interleave into the frames, and an MCP client by specification talks to
+servers **it** launches rather than to whoever launched it.
+
+What a real CLI does is spawn its MCP server as a child. That child is a *second process* — it holds no
+Pane, no live process table and no queue over the Mission file — so a `controlPlane()` built inside it
+would fork Panes into a table the Cockpit cannot see. So there is **one** control plane, in the
+Cockpit's process, on the Cockpit's port, and `mz mcp` is a bridge: a line of JSON in on stdin, one
+POST, the answer back out, interpreting nothing beyond the `id` it must answer under when the POST
+itself fails.
+
+General form: **when a transport lands in a different process from the state it acts on, the transport
+is a bridge and the state stays put.**
+
+### A tsconfig path alias is a build-tool fiction, and the entry point is where the bill arrives
+
+`@engine/index` is resolved by `tsc` and by `vitest` and by nothing else, so the program a human runs
+needs a resolver of its own — here a `module.registerHooks` resolve hook that rewrites the one prefix
+and otherwise only *adds* a `.ts` fallback, re-throwing the original failure. The consequence to know
+before copying it: **every cross-layer import in that file must be dynamic**, because static imports
+resolve before the module body runs and the hook would not yet be registered.
+
+### One flake that leaves a process behind becomes a permanent red
+
+`pane-manager.test.ts` asserts no `sleep 297` exists on the host, and the kill-escalation test above it
+is intermittent under load. When it flaked it left one alive — and the assertion then failed on **every
+subsequent run**, forever, until a human killed a process by hand. A permanent red is how a suite stops
+being read, which costs more than the flake.
+
+The fix is an `afterAll` that sweeps, and **the order is the whole design**: it runs after the check has
+already judged, so the run that leaked still fails loudly and only then is the host cleared. Sweeping in
+a `beforeAll` would have hidden the flake completely — the under-reporting failure this file keeps
+choosing against. A file that deliberately leaves a process behind owns cleaning it up after saying so.
+
+### A plant that stays green means the fixture was scaffolding, and an A/B beats a barrier
+
+Task 9 wrote a barrier store to force an interleave, and neutralising the barrier changed nothing —
+the race reproduces without it, so the fixture was unfalsifiable scaffolding around a real defect. What
+replaced it is two tests over the same gestures and the same store, differing only in how many queues
+sit in front of the file: through two writers both Commands are accepted, through one they are
+accepted-then-refused. **Neither can pass for the wrong reason, because they must disagree** — and the
+pair goes red the day the defect is fixed, which is what a pin of somebody else's defect should do.
+
+### `$!` names the subshell, and a hang you did not measure is not a hang
+
+`WS=$(mktemp -d) && node x.ts & PID=$!` reports the *subshell*, so `kill` never reaches the program.
+Task 9 lost an hour and three orphans to a hang it had already written a justification for and that did
+not exist — both spellings exit in about 10ms, measured. Beside the rule already here about `pkill -f`
+matching the shell that runs it: **before explaining a slow thing, time it.**
+
+### Strip line comments before block comments, or a `/*` in prose eats six imports
+
+Third occurrence of "you cannot grep for code" in this file. A line comment containing `@engine/*` holds
+a `/*`, so removing block comments first opens one there and swallows everything to the next `*/`. What
+caught it was a **vacuity guard** on the scan (`expect(specifiers.length).toBeGreaterThan(8)`); without
+it the check would have passed while examining six of eleven imports. Every scan that counts something
+gets a floor on the count.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

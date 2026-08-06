@@ -4,7 +4,7 @@ Derived from `techspec.md`. Read the PRD and the techspec first.
 
 ## Granularity
 
-**10 tasks** for 12 acceptance criteria. One is already delivered (`pty-agent-runner.ts`, ahead of
+**11 tasks** for 12 acceptance criteria. One is already delivered (`pty-agent-runner.ts`, ahead of
 this PRD being written), so eight remain.
 
 Justified: four are independent runtime modules with proofs that do not touch each other (Panes,
@@ -103,7 +103,7 @@ criterion did.
 
 ## Task 9 — `mz` and the run against real processes
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: `mz .` starts everything and opens the Cockpit; the same drive, with the real runner, ends
   in a Delivery.
 - **Touches**: `bin/mz.ts`, `package.json` bin entry, `cockpit/cockpit.e2e.test.ts`
@@ -137,3 +137,31 @@ criterion did.
   `cockpit/server.ts` — a route that does not exist and is Task 5's delivered code. Installing a
   dependency inside a task that was told not to have one is the scope creep this flow exists to stop.
   Both packages were confirmed installable from this environment before the task was written.
+
+## Task 11 — One door to the Mission file
+
+- **Status**: todo
+- **Severity**: this is a correctness hole, not a tidy-up. Read the second bullet before scheduling it.
+- **Goal**: one queue in front of `load → submit → append`, so the three writers of a Mission cannot
+  decide against a state another one has already moved.
+- **Touches**: `runtime/mission-writer.ts` (new), and the options of `cockpit/server.ts`,
+  `runtime/mcp-server.ts` and `runtime/combination-driver.ts`
+- **Depends on**: 9
+- **What is actually wrong**, declared by Task 9 and confirmed in review:
+  - Appends **are** ordered — all three writers share one `MissionStore`, so no line is ever torn.
+  - The **read-modify-write is not**. The server, each control plane and the driver each decide against
+    a Replay they loaded a moment ago, and nothing orders the three.
+  - driver ↔ control plane is safe by construction: the driver appends nothing while a run is in
+    flight. server ↔ driver is narrow, because a drive stops at every Halt. **server ↔ control plane is
+    real and ordinary** — a human answering a Gate while a Zord submits a Handoff.
+  - The worst case is not a duplicated record. Two `accrue-cost` decided against the same stale total
+    are **both** compared against the Cap, so a Mission can be allowed to commission work past a Cap
+    that the second accrual would have closed. That is the one promise this product makes about money.
+- **The fix, and why it cannot be done from above**: the atom is `load → submit → append`, so it needs
+  one door — a module owning one queue and exposing `record(missionId, command)`, injected in place of
+  the store into all three. A wrapper around the store cannot do it: it sees `load` and `append` as two
+  calls with nothing between them, and a lock taken at `load` deadlocks every reader that never appends
+  (the driver polling for a Handoff, a new WebSocket rendering, `delegationUnder`).
+- **Verification**: the A/B already in `cockpit/cockpit.e2e.test.ts` — the same two concurrent Commands
+  through two writers are both accepted, and through one are accepted-then-refused. It is written to go
+  red the day this is fixed, so the pin is replaced by the real assertion rather than deleted.

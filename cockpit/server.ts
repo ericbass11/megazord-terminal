@@ -5,6 +5,7 @@
  * ```
  * GET  /            the view, one HTML document
  * GET  /  + Upgrade a WebSocket carrying FromCockpit in and ToCockpit out
+ * POST /mcp/…       one control-plane frame in, one frame out — only when a `control` is given
  * ```
  *
  * ## The rule this file may not break
@@ -145,6 +146,34 @@
  * Two *processes* serving one Mission is not something this file can order, and one Cockpit per
  * Workspace is the assumption `mz` meets by construction.
  *
+ * ## The control plane's mount, added by Task 9 and why it is here rather than beside it
+ *
+ * `runtime/mcp-server.ts` is a **protocol and no transport** — it says so at length, and its `handle(frame)`
+ * knows nothing about where a frame came from. A Zord runs *inside a Pane*, so its own stdio is the
+ * pseudoterminal a human is watching and cannot also be a JSON-RPC channel; what a real CLI does instead is
+ * spawn an MCP server of its own and talk to that child over clean pipes. That child is a **second
+ * process**, and a second process cannot hold this one's live process table — so it forwards, over
+ * loopback, to the control plane living here. `bin/mz.ts` is both halves: the stdio child, and the thing
+ * that mounts the control plane on this port.
+ *
+ * So this file gained one optional collaborator and no rule. It owns the **transport** — the method, the
+ * `Origin`, the size bound, the status codes — exactly as it already owns them for the WebSocket, and it
+ * hands the body to `control.handle(frame, at)` without reading a byte of it. `at` is whatever followed
+ * `/mcp`, relayed verbatim, because *which* Zord a frame speaks for is the composer's routing question and
+ * not this server's: a control plane speaks for one Zord, and a Cockpit that invented one would be
+ * attributing a Fact to somebody who never wrote it.
+ *
+ * The alternative was a second `node:http` server on a second port inside `bin/mz.ts`. It was rejected
+ * because it would be a second transport implementation — a second `Origin` rule, a second bound, a second
+ * port to print and to close — in the layer that is allowed no rules, to avoid forty lines in the layer
+ * that already owns HTTP. What it would have bought is that this file stays untouched, and that is not a
+ * property worth two of anything.
+ *
+ * **The mount inherits this server's declared Gap about authentication and makes it sharper**: a POST to
+ * `/mcp/<zord>` forks processes and writes to the Mission's record, and the only thing standing in front of
+ * it is loopback plus the `Origin` refusal. `application/json` is required as well, so that a cross-origin
+ * form post — which no browser preflights — cannot reach it at all.
+ *
  * ## Declared Gaps
  *
  * 1. **One document, no assets.** `view` is served at `/` and `/index.html`, and everything else is 404.
@@ -226,6 +255,14 @@ const MAX_CLOSE_REASON_BYTES = 123;
 const CLOSE_GRACE_MS = 200;
 
 /**
+ * Where a control plane is mounted, when one is given: this path, and everything under it.
+ *
+ * A constant rather than an option, so the one place that decides it is the one place that serves it and a
+ * caller cannot mount a control plane somewhere a Zord will not look for it.
+ */
+export const CONTROL_PATH = "/mcp";
+
+/**
  * The largest frame, and the largest reassembled message, this server will read. Default 1 MiB.
  *
  * A gesture is a Command: a Briefing, a Slice, a Contract of a few Clauses. A megabyte is three orders
@@ -238,6 +275,22 @@ const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
 /* -------------------------------------------------------------------------------------------------
  * The contract
  * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * Something that answers one control-plane frame.
+ *
+ * Structural on purpose: this server does not import `runtime/mcp-server.ts`, not even as a type, because
+ * it does not care that the frames are MCP. It carries them and counts their bytes.
+ */
+export interface ControlTransport {
+  /**
+   * Answers one frame, or `undefined` when the frame asks for no answer.
+   *
+   * `at` is the path that followed `CONTROL_PATH`, relayed verbatim — `""` for a POST to `/mcp` itself,
+   * `"/scout"` for one to `/mcp/scout`. Whoever mounts a transport decides what that means.
+   */
+  handle(frame: string, at: string): Promise<string | undefined>;
+}
 
 /** What a server is built with. Every collaborator is handed in; nothing has a hidden default. */
 export type CockpitServerOptions = {
@@ -266,6 +319,13 @@ export type CockpitServerOptions = {
    * serves.
    */
   readonly view: string;
+  /**
+   * The control plane, mounted at `CONTROL_PATH` and everything under it.
+   *
+   * Optional, and absent by default: a Cockpit with no control plane answers 404 there, exactly as it does
+   * for every other path. See "The control plane's mount".
+   */
+  readonly control?: ControlTransport;
   /** The port to bind. **0 means an ephemeral one**, and `port` on the answer says which. Default 0. */
   readonly port?: number;
   /** The largest frame and the largest reassembled message. Default 1 MiB. */
@@ -590,6 +650,21 @@ export async function cockpitServer(options: CockpitServerOptions): Promise<Cock
 
   const http: Server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const path = pathOf(request.url);
+    const control = options.control;
+    // Before the method check, because the control plane is reached with POST and everything else here is
+    // a GET. A server built with no control plane never takes this branch, so `/mcp` stays a 404 like any
+    // other path that holds nothing.
+    if (control !== undefined && (path === CONTROL_PATH || path.startsWith(`${CONTROL_PATH}/`))) {
+      void serveControl(
+        control,
+        path.slice(CONTROL_PATH.length),
+        request,
+        response,
+        port(),
+        maxMessageBytes,
+      );
+      return;
+    }
     if (request.method !== "GET" && request.method !== "HEAD") {
       answer(response, 405, "text/plain; charset=utf-8", "this server answers GET and HEAD", request);
       return;
@@ -768,6 +843,105 @@ function answer(
     return;
   }
   response.end(bytes);
+}
+
+/**
+ * One control-plane frame, carried and answered.
+ *
+ * Every check here is about the **transport** and none of them is about the frame: the method, the origin,
+ * the media type and the size. The body goes to `handle` as the text it arrived as, and what comes back
+ * goes out as the text it is. A frame that asks for no answer is `202` with no body, which is what
+ * JSON-RPC's notification and HTTP's "accepted, nothing to say" mean in the same breath.
+ *
+ * Never throws: it is called with `void` from a `node:http` listener, where a rejection would be an
+ * unhandled one. `handle` promises not to reject either, and the 500 is what says so if it ever does.
+ */
+async function serveControl(
+  control: ControlTransport,
+  at: string,
+  request: IncomingMessage,
+  response: ServerResponse,
+  port: number,
+  maxBytes: number,
+): Promise<void> {
+  try {
+    if (request.method !== "POST") {
+      answer(response, 405, TEXT, `a control frame is POSTed to ${CONTROL_PATH}`, request);
+      return;
+    }
+
+    // The same rule the upgrade uses, and it matters more here: a cross-origin POST is not preflighted
+    // when its media type is simple, so without this a page could fork a process on this machine.
+    const origin = request.headers.origin;
+    if (origin !== undefined && !isOwnOrigin(origin, port)) {
+      answer(response, 403, TEXT, "a page on another origin may not reach this control plane", request);
+      return;
+    }
+    if (mediaTypeOf(request.headers["content-type"]) !== "application/json") {
+      answer(response, 415, TEXT, "a control frame is application/json", request);
+      return;
+    }
+
+    const read = await bodyOf(request, maxBytes);
+    if (read === undefined) {
+      answer(
+        response,
+        413,
+        TEXT,
+        `a frame of more than ${maxBytes} bytes: refused rather than truncated`,
+        request,
+      );
+      return;
+    }
+
+    const answered = await control.handle(read, at);
+    if (answered === undefined) {
+      response.writeHead(202, { "Content-Length": 0, "Cache-Control": "no-store" });
+      response.end();
+      return;
+    }
+    answer(response, 200, "application/json; charset=utf-8", answered, request);
+  } catch (cause) {
+    // A control plane that rejected, or a socket that went away mid-answer. Reported rather than absorbed:
+    // a client waiting for an answer to a request it has an id for must hear something.
+    try {
+      answer(response, 500, TEXT, messageOf(cause), request);
+    } catch {
+      // The response was already begun or the socket is gone. There is nobody left to tell.
+    }
+  }
+}
+
+const TEXT = "text/plain; charset=utf-8";
+
+/** A `Content-Type` without its parameters, lower-cased. `undefined` reads as the empty media type. */
+function mediaTypeOf(header: string | undefined): string {
+  return (header ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+/**
+ * The whole request body as text, or `undefined` when it grew past the bound.
+ *
+ * Bounded while it arrives rather than after, so a client that promises a gigabyte cannot make this
+ * process hold one. Refused, never truncated — the same answer this file gives an oversized frame and the
+ * pty runner gives an oversized run.
+ */
+async function bodyOf(request: IncomingMessage, maxBytes: number): Promise<string | undefined> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    const part: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
+    bytes += part.length;
+    if (bytes > maxBytes) {
+      // The rest is not read and **the socket is not destroyed here**: the answer still has to reach the
+      // client, and a request destroyed mid-body takes the response with it — which reads to a caller as
+      // a connection that dropped rather than a bound that was enforced. Node ends the socket once the
+      // response has been written to an unconsumed request, which is the same outcome one exchange later.
+      return undefined;
+    }
+    chunks.push(part);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 /**

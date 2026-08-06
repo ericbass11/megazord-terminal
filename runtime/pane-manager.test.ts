@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { spawn as spawnPty } from "node-pty";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 // `inheritedEnv` rather than a second spelling of "what a child inherits": it is the delivered idiom of
 // this layer, in this directory, and duplicating it here would give the repository two answers to one
@@ -1105,4 +1105,44 @@ describe("nothing is left behind", () => {
 
     expect(listed).not.toContain(FOREVER);
   });
+});
+
+/**
+ * Sweeps up whatever this file left running, **after** the check above has already judged it.
+ *
+ * Found in review of Task 9, and it is about the suite rather than about a Pane. The kill escalation
+ * test is intermittent on a loaded host, and when it flakes it leaves a live `sleep 297` behind — which
+ * then fails the check above on **every subsequent run**, in perpetuity, until a human notices and kills
+ * a process by hand. One flake became a permanent red, and a permanent red is how a suite stops being
+ * read.
+ *
+ * The order is the whole design. `afterAll` runs after every test in the file, so a run that leaked
+ * still **fails loudly** for the run in which it leaked, and only then is the leak cleared so the next
+ * run starts from a clean host. Sweeping in a `beforeAll` instead would have hidden the flake
+ * completely, which is the under-reporting failure this repo keeps choosing against.
+ *
+ * `pgrep -f` is deliberately not used: `CLAUDE.md` records twice that it matches the shell running it.
+ * The process list is read and matched by hand, and each pid is signalled directly.
+ */
+afterAll(() => {
+  if (!ON_LINUX) {
+    return;
+  }
+  const listed = execFileSync("ps", ["-e", "-o", "pid=,args="], { encoding: "utf8" });
+  for (const line of listed.split("\n")) {
+    const at = line.indexOf(" ");
+    if (at < 0 || !line.slice(at + 1).trim().startsWith(FOREVER)) {
+      continue;
+    }
+    const pid = Number(line.slice(0, at).trim());
+    if (!Number.isInteger(pid) || pid <= 1) {
+      continue;
+    }
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone, or not ours to signal. Sweeping is best effort by definition — the assertion
+      // above is what reports, and this only stops one run's mess becoming every run's.
+    }
+  }
 });
