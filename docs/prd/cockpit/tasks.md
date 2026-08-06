@@ -79,7 +79,7 @@ criterion did.
 
 ## Task 7 — Control plane
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: the embedded MCP server with `pane_spawn`, `pane_write`, `pane_read`, `handoff_submit`,
   `mission_create`, `memory_write`, `memory_read`, `agent_invoke`.
 - **Touches**: `runtime/mcp-server.ts` and test

@@ -1652,6 +1652,82 @@ The general form: **when several declared Gaps share one remedy, the remedy is t
 them before deciding, or the same dependency gets argued three times and installed by whichever task
 happens to be least disciplined.
 
+### A Surface that records only what it accepted loses the half a human most needs
+
+`CLAUDE.md` has stated the reason `submit` lives in the engine since Task 9 of the Mission Engine, and
+`cockpit/server.ts` shipped doing exactly the thing it names: appending only accepted entries. It was
+reviewed — by me — and approved, with a probe that *verified the drop* and called it correct. The
+control plane found it by doing the opposite and declaring the divergence as a Gap rather than
+quietly matching the neighbour.
+
+Four independent things said the server was wrong, and any one of them was enough:
+
+- **`submit` appends the entry whichever way the Decision went.** A Surface that filters afterwards
+  makes the file disagree with the value the engine handed it.
+- **`CONTEXT.md` defines a Replay** as "the accepted Events **and the Refusals alike**".
+- **`refusedIn` is a reader the engine ships**, and no persisted Replay could ever satisfy it.
+- **`mission-store.ts` and ADR 0009 design `load` around a Refusal being in the file** — the loader
+  deliberately does not re-validate, precisely so a Step recording a malformed Command survives.
+
+Folded state is identical either way, because `eventsOf` contributes nothing from a refused Decision.
+That is what made it invisible: **the bug changed only what is remembered, never what is true**, so
+every state assertion passed. The three pins that had to be rewritten all asserted an empty or short
+file, and each now asserts the state *and* the record, which is the shape that would have caught it.
+
+Two rules out of it. **When two layers do the same thing differently, one of them is wrong — find out
+which before matching either.** And **an executor that declares a divergence instead of copying the
+neighbour is doing the most valuable thing available to it**; the Gap was worth more than the code
+around it.
+
+### A schema that is also the validator cannot drift from what it promises
+
+`checkAgainst` in `runtime/mcp-server.ts` walks the tool's declared `inputSchema` and is the only
+thing that reads an argument's type, so `tools/list` is a statement a client can rely on rather than
+documentation beside the code. It follows that the schema declares **types and nothing else**: a
+`minLength: 1` on `subject` would be a second statement of a rule `cortexStore.write` owns, and the
+two would drift with the outer one winning because it is what a call passes through first.
+
+The line between the two fault channels is then mechanical rather than a matter of taste, and it is
+readable off where the `try` sits: **if this layer read it, it is a protocol error; if a collaborator
+raised it, it is a result.** The one exception is a value with no constructor to relay to — declare
+it, enforce it, and say why it is the exception.
+
+### `additionalProperties: false` is enforcement, and the four words a Zord may not say
+
+Dropping an argument the schema does not declare is under-reporting in its most expensive form: a
+Zord that passes `zordId` to `memory_write` and is not told believes it attributed a Fact to a
+colleague, forever, in the Workspace's shared memory. `zordId`, `missionId`, `occurredAt` and `cwd`
+are all refused *because* the closed schema is enforced — a control plane speaks for **one** Zord, on
+**one** Mission, and neither the clock nor the working folder is a model's to choose. Proven by plant:
+stop enforcing it and two tests go red, the `zordId` one among them.
+
+### A guard whose fixture is caught by the guard above it can only pass
+
+`agent_invoke` reads a recorded Harness as `unknown` in two steps — is it an object, and does it name
+a `cli`. The obvious fixture, a `Delegated` fact with `harness: undefined`, is caught by the **first**
+check, so the second was unfalsifiable and a plant proved it by going 0 red. A branch needs a fixture
+that reaches *it*, not one that reaches the family it belongs to. Same shape as the re-fold rule
+already recorded here, arriving from the other direction.
+
+### Three spellings of the holdout, and the number is part of a file's contract with the suite
+
+`sleep 300` in `pty-agent-runner.test.ts`, `sleep 297` in `pane-manager.test.ts`, `sleep 293` in
+`mcp-server.test.ts`. Vitest runs files in parallel and one file's cleanliness assertion is another
+file's flake, in a failure that names no cause — it cost two red runs of the full suite here before
+the third file picked a number. Write the number down beside the test that leaves it.
+
+And the mechanic that cost an experiment: **`pkill -f` matches the shell running it**, because that
+shell's own command line contains the pattern. Use `pgrep -x` on the program name.
+
+### Finding: a pty loses its tail when the child exits on top of a burst
+
+Measured at exactly 4095 bytes on this host — a process that writes about 9 KB and exits immediately
+can have the remainder discarded when the master closes. `runtime/pty-agent-runner.test.ts > collects
+all of it, losing nothing to the pty buffer` is the pre-existing casualty and is intermittently red
+under load with nothing else in the tree (reproduced: 3 runs, 1 failure). A test about the **stream**
+keeps the Pane alive past the burst; a test about the **exit** does not, and must not assert the tail.
+Recorded as a finding rather than fixed from inside a task that does not own that file.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

@@ -406,11 +406,27 @@ export async function cockpitServer(options: CockpitServerOptions): Promise<Cock
    *
    * 1. the Replay comes off the disk — no cache, so two clients cannot disagree about it;
    * 2. `submit` calls `decide` against `stateOf` of it, and appends the entry to the Replay it answers;
-   * 3. an **accepted** Decision is appended to the file. A refused one is not, and that is not this
-   *    server's choice to make either: `submit` records the Refusal in the Replay it returns, and what
-   *    the file holds is what the Mission accepted. The Refusal still reaches the human, verbatim, as
-   *    the entry below.
+   * 3. the entry is appended to the file — **refused as well as accepted**;
    * 4. the entry goes back whole — Command, Decision, Refusal and all.
+   *
+   * ## Why a refused entry is persisted, corrected after this file shipped without it
+   *
+   * This server originally appended only accepted entries, and reasoned that "what the file holds is
+   * what the Mission accepted". That is wrong on four counts, and the control plane in
+   * `runtime/mcp-server.ts` is what surfaced it by doing the opposite:
+   *
+   * - `submit` appends the entry to the Replay it returns **whichever way the Decision went**, so
+   *   dropping the refused ones makes the file disagree with the value the engine produced. `CLAUDE.md`
+   *   states the reason `submit` lives in the engine at all: "a Surface that recorded only what it
+   *   accepted would lose every Refusal, which is the half of the Replay a human most needs".
+   * - `CONTEXT.md` defines a Replay as "the accepted Events **and the Refusals alike**".
+   * - `refusedIn` is a reader the engine ships, and a persisted Replay could never satisfy it.
+   * - `mission-store.ts` and ADR 0009 both design `load` around a Refusal being in the file — the
+   *   loader deliberately does not re-validate, precisely so a Step recording a malformed Command
+   *   survives a reopen.
+   *
+   * Folded state is unaffected either way: `eventsOf` contributes nothing from a refused Decision, so
+   * this changes what is remembered and never what is true.
    */
   async function record(connection: Connection, command: MissionCommand): Promise<void> {
     const recorded = await options.store.load(options.missionId);
@@ -419,9 +435,7 @@ export async function cockpitServer(options: CockpitServerOptions): Promise<Cock
     // length is asserted in the test rather than assumed here.
     const entry = next[next.length - 1];
 
-    if (entry.decision.kind === "accepted") {
-      await options.store.append(options.missionId, entry);
-    }
+    await options.store.append(options.missionId, entry);
 
     sendTo(connection, { kind: "decided", entry });
     broadcast(readingOf(next));

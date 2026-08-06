@@ -38,6 +38,7 @@ import {
   briefing,
   core as coreOf,
   delegationId,
+  eventsIn,
   gateId,
   handoff,
   instant,
@@ -46,6 +47,7 @@ import {
   missionId,
   moneyFromDecimal,
   orchestrationCapability,
+  refusedIn,
   stateOf,
   stepsOf,
   submit,
@@ -551,9 +553,16 @@ describe("a gesture the engine refuses (criterion 1)", () => {
     // And it is readable as a Replay entry, which is what a human is eventually shown.
     expect(stepsOf([entry])[0].summary).toContain("was refused (illegal-transition)");
 
-    // A refused Decision is not appended: the file holds what the Mission accepted. The Refusal reached
-    // the human all the same, which is the whole distinction.
-    expect(await store.load(MISSION)).toEqual([]);
+    // And it is **on disk**. This expectation was the opposite when the file shipped — it pinned an
+    // empty store, on the reasoning that "the file holds what the Mission accepted" — and that
+    // reasoning was the violation, not the code around it. `submit` appends the entry whichever way
+    // the Decision went, `CONTEXT.md` defines a Replay as the accepted Events and the Refusals alike,
+    // and `refusedIn` is a reader nothing could ever satisfy over a file that dropped them. See the
+    // correction at `record` in `server.ts`.
+    const persisted = await store.load(MISSION);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toEqual(entry);
+    expect(refusedIn(stepsOf(persisted))).toHaveLength(1);
   });
 
   it("refuses a Command kind nobody wrote a rule for, rather than the protocol refusing it first", async () => {
@@ -584,9 +593,12 @@ describe("a gesture the engine refuses (criterion 1)", () => {
 
     const entries = client.said.filter(isDecided).map(decidedIn);
     expect(entries.map((entry) => entry.decision.kind)).toEqual(["refused", "accepted"]);
-    // A Refusal settles nothing: the Mission the second gesture opened is on disk, and the first
-    // gesture is not.
-    expect(await store.load(MISSION)).toHaveLength(1);
+    // A Refusal settles nothing about the **Mission** — the state is the fold of the accepted Events,
+    // and the refused gesture contributes none. It is still on disk, as the record of an attempt: two
+    // entries, one refused and one accepted, in the order they were decided.
+    const persisted = await store.load(MISSION);
+    expect(persisted.map((step) => step.decision.kind)).toEqual(["refused", "accepted"]);
+    expect(stateOf(persisted).status).toBe("running");
   });
 });
 
@@ -738,7 +750,11 @@ describe("the server holds no Mission state (the techspec's rule)", () => {
     const second = decidedIn(await two.next(isDecided));
 
     expect([first.decision.kind, second.decision.kind].sort()).toEqual(["accepted", "refused"]);
-    expect(await store.load(MISSION)).toHaveLength(1);
+    // Both attempts are recorded and exactly one opened the Mission. Pinning the *state* rather than
+    // the file length is what the queue is actually for: without it both would have been accepted.
+    const persisted = await store.load(MISSION);
+    expect(persisted.map((step) => step.decision.kind).sort()).toEqual(["accepted", "refused"]);
+    expect(eventsIn(stepsOf(persisted), "mission-opened")).toHaveLength(1);
   });
 });
 
