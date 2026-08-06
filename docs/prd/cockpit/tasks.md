@@ -4,13 +4,22 @@ Derived from `techspec.md`. Read the PRD and the techspec first.
 
 ## Granularity
 
-**8 tasks** for 12 acceptance criteria. One is already delivered (`pty-agent-runner.ts`, ahead of
-this PRD being written), so seven remain.
+**9 tasks** for 12 acceptance criteria. One is already delivered (`pty-agent-runner.ts`, ahead of
+this PRD being written), so eight remain.
 
 Justified: four are independent runtime modules with proofs that do not touch each other (Panes,
 Replay on disk, providers, Cortex), and three are the Cockpit itself, which cannot be split further
 without a half-server nobody can run. The end-to-end run is its own task because it is the criterion
 that proves the product exists.
+
+**Amended after Task 5, and the reason is recorded rather than silently absorbed.** The list was
+written with eight, and Task 8 carried two things: the Core that drives a Combination, and `mz` with
+the run that proves the product. Neither the techspec's structure list nor any task named the driver,
+so it would have arrived as an unnamed half of the entry point — the largest body of logic in this
+PRD, delivered with the least attention, in the task whose verification is about something else.
+Splitting it gives each half a proof that can fail on its own: the driver is provable against the
+fake runner with no process at all, and `mz` is provable by starting it. The count changed; no
+criterion did.
 
 ## Task 1 — Mission store on disk
 
@@ -78,12 +87,28 @@ that proves the product exists.
 - **Verification**: criterion 9 — a client calls `pane_spawn` and `handoff_submit`, and both take
   effect in the Cockpit.
 
-## Task 8 — `mz` and the end-to-end run
+## Task 8 — The Core that drives a Combination
 
 - **Status**: todo
-- **Goal**: `mz .` starts everything and opens the Cockpit; a Briefing drives a Combination of real
-  processes to a Delivery.
+- **Goal**: the deterministic driver: given a Briefing and a Combination, it opens the Mission,
+  delegates each Slice in the declared order, invokes the Zord for each, submits the Handoff it gets
+  back, resubmits after a Refusal, raises the Combination's Gates, and delivers.
+- **Touches**: `runtime/combination-driver.ts` and test
+- **Depends on**: 1, 3, 7
+- **Verification**: criterion 5, against `fakeAgentRunner` — one Briefing, a Delegation per Slice, a
+  Handoff refused and then accepted, a Gate raised and answered, ending in a Delivery, with the whole
+  Replay on disk. Every gesture goes through `submit`; the driver decides nothing the engine decides.
+- **Out of scope, stated because it is the tempting part**: planning with a model. PRD out-of-scope 3
+  pins the driver to following a declared Roster in order. A Combination is data, not something judged.
+
+## Task 9 — `mz` and the run against real processes
+
+- **Status**: todo
+- **Goal**: `mz .` starts everything and opens the Cockpit; the same drive, with the real runner, ends
+  in a Delivery.
 - **Touches**: `bin/mz.ts`, `package.json` bin entry, `cockpit/cockpit.e2e.test.ts`
-- **Depends on**: 6, 7
-- **Verification**: criterion 5 — one Briefing, at least one real Delegation to a real process, a
-  Handoff refused and then accepted, ending in a Delivery, with the Replay on disk.
+- **Depends on**: 6, 7, 8
+- **Verification**: criteria 1 and 5 — the Cockpit is reachable with no further steps, and one
+  Briefing produces at least one real Delegation to a real process, with the Replay on disk. It also
+  carries the two transports Task 7 deliberately did not write: the control plane's stdio framing and
+  its mount on the Cockpit's port.
