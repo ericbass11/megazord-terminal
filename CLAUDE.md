@@ -977,12 +977,90 @@ Two consequences worth knowing before touching it:
   and no empty table for one, which would be the always-zero field this file keeps warning about.
 - **The name scan has no exemption table**, so widening it there was measured first: all 135 exported names
   of `engine/domain/` stay clean. `catalogDefault` still passes for the right reason — the avoided entry is
-  `defaults`, and growing forwards never reaches the shorter `default`.
+  `defaults`, and growing forwards never reaches the shorter `default`. **That measurement was not enough,
+  and BUG-3 is why**: names that exist cannot show a false positive on a name nobody has written yet. What
+  the widening actually broke was the comparison *beside* it — see "Widen one side of a comparison and you
+  have written a bug".
 
 What inflection changed on the day it landed: `interface` and `block` stopped being dead exemptions,
 because their only carriers were `interfaces` (techspec) and `blocks` (PRD and tasks); `directive` had to
 be **added**, because `qa.md` says "75 `directives`" about `@ts-expect-error` and a bugfix does not reword
 QA's document; and `output` was deleted, having no carrier in any form.
+
+### Widen one side of a comparison and you have written a bug: BUG-3
+
+Inflection landed on the **avoided** side of both scans and not on the **term** side of the name scan, which
+compared exact spellings. `delivery` is the glossary's only word that is both a defined term and an
+`_Avoid_` entry (under **Handoff**), so `export type Delivery` passed and `export type Deliveries` was
+reported — with nowhere to be excused, the name scan having no exemption table and by decision no future
+one. Renaming correct code to satisfy a scan is how a scan gets switched off, which is the outcome the
+whole inflection design was argued for.
+
+The remedy is not a second widening kept in step by hand. It is **one derivation of "the same word"** —
+`formsOf` in `tools/glossary-check.ts`, a phrase whose last word bends and whose earlier words do not — read
+by every comparison in the module: the avoided side via `runOf` and `proseMatcher`, the term side via
+`termForms`. Whatever grows there grows on both sides at once. Two mechanics worth not rediscovering:
+
+- **Two derivations of one notion will drift, and the drift is silent.** It was latent for a whole QA round:
+  135 names passed, so nothing failed and nothing said anything. A test that loops over `formsOf` and
+  asserts the matcher agrees is cheap; **give it a vacuity guard** (`checked > entries`), or narrowing
+  `formsOf` back to the bare word makes the loop pass by examining nothing.
+- **`formsOf` lowercases and `proseMatcher` does not**, deliberately: prose means the capitals the glossary
+  wrote (`TODO` the marker, `PRs` and not `PRS`), while `TODO_MARKER` and `todoMarker` are the same name. The
+  forms are the same forms; only the stem's capitals differ, and the test reconstructs them rather than
+  pretending the two agree letter for letter.
+
+### The glossary's own words win, and the tie is broken once, not per scan
+
+The collision `delivery` creates cannot be resolved by matching harder — both readings are in `CONTEXT.md`,
+and no scan can tell which concept `Deliveries` means. `enforceable(glossary)` answers it once, for **both**
+scans: an `_Avoid_` entry that is itself a defined term is not enforced at all. Three reasons, all pointing
+the same way: a word the glossary *defines* is correct code by construction; the prose scan had always read
+it that way, so this is the two scans agreeing rather than a new licence; and an `_Avoid_` entry rules a
+word out for **one other** concept while a term heading names a concept, so the more specific statement
+wins.
+
+Consequences to know before touching it:
+
+- **It is a derivation, not a list.** Nothing is named in the module: the subtraction is computed from
+  `CONTEXT.md` on every run, so adding or removing a term moves it with no edit. That is what makes it not
+  the exemption table the name scan refuses to grow. The cost is stated and real — `delivery` can no longer
+  be enforced as a name for a Handoff, and whoever wants that back resolves the collision **in the
+  glossary**, which is where a collision between two glossary readings belongs.
+- **An exemption that is dead today is still kept when its mechanism is the next false positive.** "A name
+  that is itself a term is never a violation" excused exactly one of the 39 terms, `Delivery`, and
+  `enforceable` now excuses that word earlier. It stays, widened to read `formsOf`, for the case the
+  subtraction cannot express: a **multi-word** term one of whose words is avoided elsewhere (`Session Log`
+  against `log`). This is not the BUG-2 rule being broken — that rule is about a **table of words nobody can
+  tell is dead**; this is a structural branch whose deadness is derivable from the glossary, declared where
+  it lives, and **exercised against a synthetic glossary**, because a branch nothing exercises is a branch
+  that rots.
+- **A scope narrowness hides behind a spelling narrowness.** The exact-join skip excused a name that *is* a
+  term and nothing else, so `deliveryOf` and `DeliveryId` were reported too — no inflection involved. QA
+  found the collision through the plural; the singular `DeliveryId` is the name someone writes first. When a
+  comparison is asymmetric, check both axes.
+
+### A Markdown code span is not a line, so it cannot be stripped a line at a time
+
+QA's caveat 12, fixed rather than declared. A span opens on a run of backticks and closes on the next run of
+the same length, and Markdown lets one wrap across a line break. Stripping line by line left an unmatched
+tick on each line, and the stray closing tick then paired with the **next opening tick on its own line** —
+so one wrapped span both **hid** the ordinary prose in between and **exposed** the following span. Four such
+spans are live in `docs/prd/` today, and the hole cost QA two reproved runs on its own document. So
+`proseLinesOf` finds fences line by line (a fence *is* a line) and strips spans over the kept lines joined
+back together.
+
+Two bounds are what keep a Markdown accident from blanking a document, and both are tested:
+
+- **An unmatched run stays literal**, exactly as Markdown renders it, so a stray backtick blanks nothing and
+  the words after it are still scanned. Same reasoning `codeOf` records for regular-expression literals: a
+  check that silently under-reports is the failure mode to avoid.
+- **A span never crosses a blank line.** A blank line ends the paragraph, so it ends any span an author left
+  open; without it one stray tick swallows the rest of a document.
+
+Blanking preserves each character's column, like `codeOf`, so a violation still points at the right place.
+The practical rule for whoever writes a document here is unchanged and now cheap rather than load-bearing:
+keep a code span on one line if you can.
 
 ### A test that writes its own carrier measures the mechanism, not the tree
 

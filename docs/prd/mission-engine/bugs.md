@@ -10,7 +10,7 @@ introduced. Current state:
 | --- | --- | --- |
 | BUG-1 | fixed | yes — Round 2 reproduced the fix at the cause by three independent routes |
 | BUG-2 | fixed | yes — Round 2 falsified the corrected test by reinstating the deleted entry |
-| BUG-3 | **open** | opened by Round 2 |
+| BUG-3 | fixed | not yet — Round 3 has not run |
 
 ## BUG-1 — Two `_Avoid_` words are live in `prd.md` prose, escaping the scan through inflection
 
@@ -306,4 +306,130 @@ introduced. Current state:
   and it is a measurement of the names that exist. It cannot see a name nobody has written yet, which
   is BUG-2's shape in another form — a check measured against what is there rather than against what
   it claims.
-- **Status**: open
+- **Status**: fixed
+- **Fix**: the cause is that the module had **two answers to one question** — "are these the same word?" —
+  and only one of them grew when inflection landed. The fix gives it one answer and puts the collision
+  where a collision between two glossary readings belongs, then applies it to both scans at once.
+
+  **1. One derivation of "the same word": `formsOf`.** A phrase, with its last word bent through
+  `inflectionsOf` and the words before it exact — `gate decisions`, never `gates decision`. Every
+  comparison in the module now reads it: the avoided side of both scans (through `runOf` and
+  `proseMatcher`, which need a set and a regexp of the same forms) and the term side of both scans
+  (through `termForms`). A later widening therefore widens both sides of every comparison in one edit,
+  which is the property BUG-3 was the absence of. Pinned three ways: `formsOf` agrees with
+  `proseMatcher` form by form over all 129 avoided entries, agrees with the name scan form by form over
+  the 128 it enforces, and both loops assert they examined more forms than there are entries, so neither
+  can pass by deriving nothing.
+
+  **2. The collision is resolved once, for both scans: `enforceable`.** An `_Avoid_` entry that is
+  itself a defined term is **not enforced at all** — in names or in prose. `delivery` is the only such
+  entry, and the subtraction is derived from `CONTEXT.md` on every run rather than listed anywhere, so a
+  term added or removed moves it with no edit to the module. **The term wins**, and the reasoning is
+  written into the function:
+
+  - a word the glossary *defines* is correct code by construction, and a check that reproves the model
+    for using its own vocabulary is the one defect that gets a check deleted — PRD open risk 5, and the
+    thing the name scan cannot absorb, having no exemption table and by decision no future one;
+  - the prose scan has always read it this way, so this is the two scans agreeing rather than a new
+    licence;
+  - an `_Avoid_` entry rules a word out for **one other** concept, while a term heading names a concept;
+    the more specific statement breaks the tie.
+
+  The cost is stated in the source and is real: `delivery` can no longer be enforced as a name for a
+  Handoff, in any form. Whoever wants that back resolves the collision in `CONTEXT.md`, which is where it
+  lives — not in the tool, and not by renaming `Delivery`.
+
+  **3. The name scan's remaining rule was widened rather than left behind.** "A name that is itself a
+  defined term is never a violation" now reads `formsOf` too. With (2) in place it carries nothing today,
+  and that is measured rather than assumed: of the 39 terms it ever excused exactly one, `Delivery`, and
+  `enforceable` now excuses that word before the line is reached. It is kept for the case (2) cannot
+  express — a **multi-word** term one of whose words is avoided elsewhere, where the entry stays
+  enforceable and the name is still the glossary's own. `Gate decision` is the only multi-word term today
+  and none of its words is avoided. Left un-widened it would have been the same bug one level up:
+  a hypothetical `Session Log` term would excuse `SessionLog` and report `SessionLogs`. Exercised against
+  a synthetic glossary, because a branch nothing exercises is a branch that rots.
+
+  **The defect was wider than the plural.** The exact-join skip was narrow in *scope* as well as in
+  spelling: it excused a name that **is** a term and nothing else, so `deliveryOf` and `DeliveryId` — no
+  inflection anywhere — were reported too. QA found the collision through the plural; the singular
+  `DeliveryId` is the name someone writes first.
+
+  **The wrapped code span (QA's caveat 12) is fixed, not declared.** A code span opens on a run of
+  backticks and closes on the next run of the same length, and Markdown lets one wrap across a line
+  break, so `proseLinesOf` now strips spans over the kept lines joined back together instead of one line
+  at a time. Fences stay line-based, because a fence *is* a line. Two bounds keep a Markdown accident
+  from blanking a document, and both are tested: an **unmatched run stays literal**, exactly as Markdown
+  renders it, so a stray backtick blanks nothing and the words after it are still scanned; and a span
+  **never crosses a blank line**, because a blank line ends the paragraph and therefore any span left
+  open. Fixed rather than declared for three reasons: four wrapped spans are live in `docs/prd/` right
+  now, the hole errs in **both** directions (it hides prose *and* exposes the next span), and it cost QA
+  two reproved runs on its own document — a check that reproves the person holding it is the same failure
+  mode as one that reproves correct code.
+- **Proof**:
+
+  ```
+  $ npm test
+   Test Files  15 passed (15)
+        Tests  469 passed (469)
+  $ npx tsc --noEmit     EXIT=0
+  $ npm run build        EXIT=0   ✓ Generating static pages (28/28)
+  ```
+
+  35 → 46 tests in `glossary-check.test.ts`, none removed, none loosened, and `engine/` and `CONTEXT.md`
+  untouched.
+
+  **The three directions BUG-3 asks for, planted into the real `engine/domain/mission.ts` and
+  `prd.md`** — not into a fixture — and reverted by restoring the two files from a copy taken first:
+
+  ```
+  # planted: export type Deliveries / deliveriesOf / DeliveryId / SubagentSquads
+  # planted: "The maestros dispatched subtasks to workers inside squads, and the deliveries were consolidated."
+  $ npx vitest run tools/glossary-check.test.ts
+  engine/domain/mission.ts:1567 uses "subagent" (_Avoid_ under Zord) in: SubagentSquads
+  engine/domain/mission.ts:1567 uses "squad" (_Avoid_ under Combination) in: SubagentSquads
+  prd.md:154 "maestro" (Core)  "dispatch" (Delegation)  "subtask" (Slice)  "worker" (Zord)  "squad" (Combination)
+   Tests  2 failed | 44 passed (46)
+  ```
+
+  Three names that are the glossary's own term in an inflected or extended form are **clean** on the real
+  tree — `Deliveries`, `deliveriesOf`, `DeliveryId`. The name on the next line fires **twice**, for `squad`
+  through its plural and for `subagent` exactly, so the widening still reaches both. The five prose hits are
+  every one of them an inflected form, and `deliveries` in the same sentence is correctly not reported,
+  which prose has always done.
+
+  **The wrapped span, on that same planted document, with only the reader moved** — the strongest form,
+  because the file is held fixed:
+
+  ```
+  # the pre-fix reader (spans stripped one line at a time) over the same plant
+  prd.md:156 uses "squad" (_Avoid_ under Combination) in: A quoted `squad
+  prd.md:157 uses "maestro" (_Avoid_ under Core) in: worker      maestro` right after it.
+  prd.md:157 uses "worker" (_Avoid_ under Zord) in: worker      maestro` right after it.
+  ```
+
+  Three violations, and all three are false: `squad` and `worker` sit inside one wrapped span, and
+  `maestro` was in a span of its own that the stray closing tick exposed. The fixed reader reports none of
+  them. Over the real documents the change touches exactly the 8 lines carrying the 4 live wrapped spans;
+  every word it stops reading is code-span content and every character it starts reading is punctuation,
+  so no exemption lost a carrier and both scans stay at zero.
+
+  **Falsified at the guarantee, eight times in seven shapes, each restored from a copy and the suite re-run
+  green.** Every break is in the source, never in a probe:
+
+  | Break in `tools/glossary-check.ts` | Test that goes red |
+  | --- | --- |
+  | `namingViolations` reads `glossary.avoided` again, not `enforceable` | `never reproves an inflection of a glossary term, which is what BUG-3 was` — reports `deliveriesOf` |
+  | `enforceable` subtracts nothing | that test, plus `enforces exactly the list the prose scan does`, plus **`passes clean over docs/prd` and `docs/adr`** — which is how the extraction is proven to be the same rule the prose scan always had |
+  | `termForms` compares exact spellings | `excuses a multi-word term in any form` — `SessionLogs` |
+  | `formsOf` stops bending the last word | 4 red, including both `agrees … form by form` loops, whose vacuity guards fire as `expected 129 to be greater than 129` |
+  | `runOf` stops inflecting the avoided side | 5 red, including `still fires on an inflection of a word that is only avoided` |
+  | spans stripped one line at a time | `reads a code span that wraps across a line break as one span` |
+  | a span may cross a blank line / an unmatched run blanks the paragraph | `does not let a span cross a blank line` / `leaves an unmatched backtick literal` |
+
+  **What the fix did to what the check reports on the current tree.** It **narrowed** it, in one word and
+  one direction: `delivery` is no longer enforced against exported names, in any form, and nothing else
+  changed — 135 names clean before and after, 128 of 129 avoided entries still enforced in names, and the
+  prose scan's enforced list is byte-for-byte what it was, since it subtracted terms already. The span fix
+  narrows it too: three false positives on the plant above, and on the real documents it blanks code-span
+  content that was being read as prose. Nothing was widened, and no violation that the check reported
+  before this fix goes unreported now.

@@ -46,6 +46,20 @@
  * `audit`. Growing the word forwards into its own plural and verb forms is the opposite operation from
  * stemming, which cuts a word back to a root it shares with unrelated words — that is what would flag
  * `validateHandoff` for `validation`. `Catalog` is still not `log`, `logs`, `logged` or `logging`.
+ *
+ * Every comparison of two words in this module goes through `formsOf`, and that is not tidiness. BUG-3
+ * was two answers to "is this the same word" living side by side: the avoided side of the name scan bent
+ * the last word into its inflections while the exemption beside it compared exact spellings, so the
+ * plural of the glossary's own `Delivery` came out a violation. One function, so a later widening widens
+ * both sides of every comparison at once.
+ *
+ * ## The glossary's own words win, and that is decided once
+ *
+ * `delivery` sits under `_Avoid_` for **Handoff**, and `Delivery` is a defined term — the glossary's own
+ * name for the consolidated outcome of a Mission. The two readings cannot both be enforced, and a scan
+ * reading names cannot tell which concept `Deliveries` means. `enforceable` resolves it in the one
+ * direction that keeps the check alive: **an `_Avoid_` entry that is itself a defined term is not
+ * enforced at all**, in names or in prose. See its own comment for why that is what the glossary means.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -186,6 +200,26 @@ export function inflectionsOf(word: string): readonly string[] {
   }
 
   return [...forms];
+}
+
+/**
+ * Every form of a phrase this module is willing to treat as the same word: the last word bends through
+ * `inflectionsOf`, the words before it are exact. `delivery` → `delivery`, `deliveries`, `deliveried`;
+ * `gate decision` → `gate decisions`, never `gates decision`, because English bends the noun a phrase
+ * ends on.
+ *
+ * This is the single answer to "is this the same word", and every comparison in the module reads it: the
+ * avoided side of both scans (through `runOf` and `proseMatcher`, which need a set and a regexp of the
+ * same forms) and the term side of both scans (through `termForms`). BUG-3 was what happens when one
+ * side of one comparison grows and the other does not.
+ */
+export function formsOf(phrase: string): readonly string[] {
+  const words = wordsOf(phrase);
+  if (words.length === 0) {
+    return [];
+  }
+  const head = words.slice(0, -1);
+  return inflectionsOf(words[words.length - 1]).map((form) => [...head, form].join(" "));
 }
 
 /** The words of an avoided entry, split so the last one can be matched in any inflection. */
@@ -400,15 +434,88 @@ export type ProseLine = {
 };
 
 /**
+ * Blanks every inline code span, keeping each character's line and column so line numbers survive.
+ *
+ * A span opens on a run of backticks and closes on the **next run of the same length** — which is how
+ * Markdown itself delimits one, and it is why this cannot be done a line at a time. A span that wraps
+ * across a line break used to defeat the strip: the opening line was left with an unmatched backtick and
+ * the continuation line with another, and that stray closing tick then paired with the *next* opening tick
+ * on its own line. Both error directions followed from one wrapped span — the ordinary prose in between
+ * was blanked away, hiding whatever it said, and the following span was left exposed, so a word that was
+ * quoted read as a word that was naming something. It cost QA two reproved runs on its own document
+ * before anybody noticed that the check, not the prose, was wrong.
+ *
+ * Two bounds keep a Markdown accident from blanking a document:
+ *
+ * - **An unmatched run stays literal**, exactly as Markdown renders it, so a stray backtick blanks nothing
+ *   and the words after it are still scanned. A check that silently under-reports is the failure mode to
+ *   avoid; this is the same reasoning `codeOf` records for regular-expression literals.
+ * - **A span never crosses a blank line.** A blank line ends a paragraph, so it ends any span an author
+ *   left open — without this, one stray tick could swallow the rest of a document.
+ */
+function spansBlanked(text: string): string {
+  const characters = text.split("");
+  let at = 0;
+
+  while (at < characters.length) {
+    if (characters[at] !== "`") {
+      at += 1;
+      continue;
+    }
+
+    const opens = at;
+    while (at < characters.length && characters[at] === "`") {
+      at += 1;
+    }
+    const ticks = at - opens;
+    const paragraph = /\n[ \t]*\n/.exec(text.slice(at));
+    const until = paragraph === null ? characters.length : at + paragraph.index;
+
+    let closes = -1;
+    let search = at;
+    while (search < until) {
+      if (characters[search] !== "`") {
+        search += 1;
+        continue;
+      }
+      const run = search;
+      while (search < until && characters[search] === "`") {
+        search += 1;
+      }
+      if (search - run === ticks) {
+        closes = search;
+        break;
+      }
+    }
+
+    if (closes === -1) {
+      // Unmatched: the backticks are literal text, and everything after them is still prose.
+      continue;
+    }
+    for (let index = opens; index < closes; index += 1) {
+      if (characters[index] !== "\n") {
+        characters[index] = " ";
+      }
+    }
+    at = closes;
+  }
+
+  return characters.join("");
+}
+
+/**
  * Markdown with everything that is not prose removed: fenced code blocks, inline code spans and link
  * targets.
  *
  * All three quote something rather than naming it. The techspec's own sentence is the proof that this is
  * required rather than convenient: "The reading is `stepsOf`, not `project`" — the second span is there
  * *because* `project` is avoided, and a scan that read it would fail the document that explains the rule.
+ *
+ * Fences are found line by line, because a fence is a line; spans are found over the kept lines joined
+ * back together, because a span is not — see `spansBlanked`.
  */
 export function proseLinesOf(markdown: string): readonly ProseLine[] {
-  const prose: ProseLine[] = [];
+  const kept: ProseLine[] = [];
   let fenced = false;
 
   markdown.split("\n").forEach((raw, index) => {
@@ -419,41 +526,91 @@ export function proseLinesOf(markdown: string): readonly ProseLine[] {
     if (fenced) {
       return;
     }
-    const text = raw
-      .replace(/``[^`]*``/g, " ")
-      .replace(/`[^`]*`/g, " ")
-      .replace(/\]\([^)]*\)/g, "] ");
-    prose.push({ line: index + 1, text });
+    kept.push({ line: index + 1, text: raw });
   });
 
-  return prose;
+  const blanked = spansBlanked(kept.map((prose) => prose.text).join("\n")).split("\n");
+  return kept.map((prose, index) => ({
+    line: prose.line,
+    text: (blanked[index] ?? prose.text).replace(/\]\([^)]*\)/g, "] "),
+  }));
 }
 
 /* -------------------------------------------------------------------------------------------------
  * The two scans
  * ---------------------------------------------------------------------------------------------- */
 
-function termWords(glossary: Glossary): ReadonlySet<string> {
-  return new Set(glossary.terms.map((term) => wordsOf(term).join(" ")));
+/** Every defined term, in every form: `mission`, `missions`, `gate decision`, `gate decisions`. */
+function termForms(glossary: Glossary): ReadonlySet<string> {
+  return new Set(glossary.terms.flatMap((term) => formsOf(term)));
+}
+
+/**
+ * The avoided words a scan really enforces: every `_Avoid_` entry **except** the ones that are themselves
+ * defined terms.
+ *
+ * `delivery` is the only such entry today, and it is the whole reason this function exists. It sits under
+ * `_Avoid_` for **Handoff** — do not call a Handoff a delivery — and `Delivery` is at the same time the
+ * glossary's own term for the consolidated outcome of a Mission, with an `_Avoid_` list of its own. Both
+ * readings are in `CONTEXT.md` and only one of them can be enforced, because neither scan can tell which
+ * concept the word means in `Deliveries`.
+ *
+ * **The term wins**, for three reasons that all point the same way:
+ *
+ * - A word the glossary *defines* is correct code by construction. `export type Delivery` is the name the
+ *   model asks for, and a check that reproves the model for using its own vocabulary is a check deleted in
+ *   its second week — the failure mode PRD open risk 5 names and the one the name scan cannot absorb, since
+ *   it has no exemption table and by decision will not grow one.
+ * - The prose scan has always read it this way (`delivery` was never enforced in prose, in any form), so
+ *   this is the two scans agreeing rather than a new licence.
+ * - The `_Avoid_` list is advice about *which word names which concept*, and the glossary answers that for
+ *   `delivery` twice. The tie is broken by the more specific statement: a term heading names a concept,
+ *   while an `_Avoid_` entry only rules a word out for one other concept.
+ *
+ * Two things this deliberately is **not**. It is not an exemption list — nothing is named here, the
+ * subtraction is derived from `CONTEXT.md` on every run, so adding or removing a term moves it with no
+ * edit to this file. And it is not asymmetric: both sides read `formsOf`, so `Deliveries` and
+ * `deliveriesOf` are excused for the reason `Delivery` is, rather than by luck of spelling.
+ *
+ * The cost, stated because it is real: `delivery` cannot be enforced as a name for a Handoff. Whoever
+ * wants that back has to resolve the collision in `CONTEXT.md` — which is where a collision between two
+ * glossary readings belongs, not in this module.
+ */
+export function enforceable(glossary: Glossary): readonly AvoidedWord[] {
+  const defined = termForms(glossary);
+  return glossary.avoided.filter((entry) => !defined.has(wordsOf(entry.word).join(" ")));
 }
 
 /**
  * Scan 1 — exported names in `engine/domain/`.
  *
- * One exemption, and it is not a list: **a name that is itself a glossary term is never a violation.**
- * `Delivery` is a defined term and also sits under `_Avoid_` for **Handoff**, so `export type Delivery`
- * is the correct name for the consolidated outcome of a Mission and a scan without this would reprove
- * the model for using its own vocabulary. Nothing else is exempt here — an exported domain name that
- * carries an avoided word is the thing this check exists to catch.
- *
  * The word matches in every inflection (`inflectionsOf`), the same as in prose: `export type Squads`
  * publishes `squad` as the name of a concept exactly as `export type Squad` does. This scan has no
  * exemption table to absorb a false positive, so the expansion was measured against `engine/domain/`
- * before it was turned on — all 135 exported names stay clean, `catalogDefault` included.
+ * before it was turned on — all 135 exported names stay clean, `catalogDefault` included. That
+ * measurement was necessary and not sufficient, which is BUG-3: names that exist cannot show a false
+ * positive on a name nobody has written yet, and what the widening broke was the comparison beside it.
+ *
+ * Nothing here is exempt by name. Two things are not violations, and both are the glossary's own words
+ * winning rather than a list of excuses:
+ *
+ * 1. **An entry that is itself a defined term is not enforced at all** — `enforceable`, shared with the
+ *    prose scan. This is what makes `Deliveries`, `deliveriesOf` and `DeliveryId` clean, and it is where
+ *    BUG-3 lived: the avoided side bent `delivery` into `deliveries` while the term side compared exact
+ *    spellings, so the plural of the glossary's own `Delivery` was reported and the singular was not.
+ * 2. **A name that is itself a defined term is never a violation**, in any form `formsOf` derives. With
+ *    (1) in place this carries nothing today — measured: of the 39 terms, `Delivery` was the only one it
+ *    ever excused, and `enforceable` now excuses that word before this line is reached. It is kept for
+ *    the case (1) cannot express: a **multi-word** term one of whose words is avoided elsewhere, where
+ *    the entry is enforceable and the name is still the glossary's own. `Gate decision` is the only
+ *    multi-word term today and none of its words is avoided; a hypothetical `Session Log` would need this
+ *    line, and `SessionLogs` would need it to read `formsOf` rather than an exact spelling. The mechanism
+ *    is pinned by a test against a synthetic glossary, because a branch nothing exercises is a branch
+ *    that rots.
  */
 export function namingViolations(glossary: Glossary, sources: readonly SourceText[]): readonly Violation[] {
-  const defined = termWords(glossary);
-  const avoided = glossary.avoided.map((entry) => ({ ...entry, run: runOf(entry.word) }));
+  const defined = termForms(glossary);
+  const avoided = enforceable(glossary).map((entry) => ({ ...entry, run: runOf(entry.word) }));
   const violations: Violation[] = [];
 
   for (const source of sources) {
@@ -577,19 +734,19 @@ export function proseMatcher(word: string): RegExp {
 /**
  * Scan 2 — prose in `docs/prd/`.
  *
- * Two exemptions on top of the removals `proseLinesOf` already did: a word that is itself a glossary term
- * is never a violation (`Delivery`), and the words in `exempted`, each with its reason. Pass `[]` to see
- * what the exemptions are actually carrying — the test does exactly that, over the real documents.
+ * Two exemptions on top of the removals `proseLinesOf` already did: an entry that is itself a glossary
+ * term is not enforced (`enforceable`, shared with the name scan), and the words in `exempted`, each with
+ * its reason. Pass `[]` to see what the exemptions are actually carrying — the test does exactly that,
+ * over the real documents. Passing `[]` does **not** reach `enforceable`: a term is not an exemption, and
+ * scanning a document for the glossary's own vocabulary would report the glossary.
  */
 export function proseViolations(
   glossary: Glossary,
   documents: readonly SourceText[],
   exempted: readonly Exemption[] = PROSE_EXEMPTIONS,
 ): readonly Violation[] {
-  const defined = termWords(glossary);
   const excused = new Set(exempted.map((exemption) => exemption.word.toLowerCase()));
-  const avoided = glossary.avoided
-    .filter((entry) => !defined.has(wordsOf(entry.word).join(" ")))
+  const avoided = enforceable(glossary)
     .filter((entry) => !excused.has(entry.word.toLowerCase()))
     .map((entry) => ({ ...entry, matcher: proseMatcher(entry.word) }));
   const violations: Violation[] = [];

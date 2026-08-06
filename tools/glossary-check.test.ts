@@ -15,8 +15,10 @@ import {
   PROSE_EXEMPTIONS,
   adrDocuments,
   domainSources,
+  enforceable,
   exportedNamesOf,
   formatViolations,
+  formsOf,
   glossaryText,
   inflectionsOf,
   namingViolations,
@@ -135,6 +137,62 @@ describe("inflections of an avoided word", () => {
   });
 });
 
+/**
+ * BUG-3 was one question with two answers: the avoided side of the name scan bent the last word into its
+ * inflections, and the term exemption beside it compared exact spellings. `formsOf` is the single answer,
+ * and this block is what stops the two sides drifting apart again — every side of every comparison in the
+ * module reads it, so a form it derives is a form both scans agree about.
+ */
+describe("what counts as the same word, on both sides", () => {
+  it("derives the same forms for a phrase as the matcher does for an entry", () => {
+    expect(new Set(formsOf("delivery"))).toEqual(new Set(inflectionsOf("delivery")));
+    // A multi-word phrase bends its last word only, and keeps the words as one joined phrase.
+    expect(formsOf("gate decision")).toContain("gate decisions");
+    expect(formsOf("gate decision")).not.toContain("gates decision");
+    expect(formsOf("")).toEqual([]);
+  });
+
+  it("agrees with the prose matcher, form by form, for every avoided entry", () => {
+    let checked = 0;
+    for (const entry of GLOSSARY.avoided) {
+      const matcher = proseMatcher(entry.word);
+      // One difference, and it is deliberate: prose keeps the capitals the glossary wrote (`TODO` the
+      // marker, not `todo` the task status, and `PRs` rather than `PRS`), while `formsOf` lowercases,
+      // because an identifier's casing carries no such distinction — `TODO_MARKER` and `todoMarker` are
+      // the same name. The forms are the same forms; only the capitals of the stem differ.
+      const stem = wordsOf(entry.word).join(" ");
+      const written = (form: string): string =>
+        entry.word === entry.word.toUpperCase() && form.startsWith(stem)
+          ? `${entry.word}${form.slice(stem.length)}`
+          : form;
+      for (const form of formsOf(entry.word)) {
+        expect(matcher.test(`a sentence saying ${written(form)} once`), `${entry.word} -> ${form}`).toBe(true);
+        checked += 1;
+      }
+    }
+    // Not vacuous: every entry contributed more than its own spelling, so inflected forms were exercised.
+    expect(checked).toBeGreaterThan(GLOSSARY.avoided.length);
+  });
+
+  it("agrees with the name scan, form by form, for every avoided entry it enforces", () => {
+    let checked = 0;
+    for (const entry of enforceable(GLOSSARY)) {
+      for (const form of formsOf(entry.word)) {
+        checked += 1;
+        const name = form
+          .split(" ")
+          .map((word) => `${word[0].toUpperCase()}${word.slice(1)}`)
+          .join("");
+        expect(
+          wordsFlagged(namingViolations(GLOSSARY, planted(`export type ${name} = never;`))),
+          `${entry.word} -> ${name}`,
+        ).toContain(entry.word);
+      }
+    }
+    expect(checked).toBeGreaterThan(enforceable(GLOSSARY).length);
+  });
+});
+
 describe("what counts as an export", () => {
   it("collects declarations and ignores what a comment says", () => {
     const source = [
@@ -213,6 +271,89 @@ describe("exported domain names (criterion 8)", () => {
     expect(wordsFlagged(namingViolations(withoutDelivery, planted("export type Delivery = never;")))).toEqual([
       "delivery",
     ]);
+  });
+
+  /**
+   * BUG-3. `delivery` is avoided under **Handoff** and `Delivery` is a defined term — the glossary's only
+   * such collision — and after inflection landed, the avoided side reached `deliveries` while the term side
+   * still compared exact spellings. So the plural of the model's own vocabulary was a violation with
+   * nowhere to be excused, since this scan has no exemption table and will not grow one. `enforceable`
+   * settles it once, for both scans: an entry that is itself a term is not enforced, in any form.
+   */
+  it("never reproves an inflection of a glossary term, which is what BUG-3 was", () => {
+    for (const declaration of [
+      "export type Delivery = { readonly summary: string };",
+      "export type Deliveries = readonly Delivery[];",
+      "export function deliveriesOf(): void {}",
+      "export type DeliveryId = never;",
+      "export const DELIVERIES = [] as const;",
+    ]) {
+      const violations = namingViolations(GLOSSARY, planted(declaration));
+      expect(violations, formatViolations(violations)).toEqual([]);
+    }
+  });
+
+  it("proves the term is what carries every one of those, not blindness", () => {
+    const withoutDelivery: Glossary = {
+      terms: GLOSSARY.terms.filter((term) => term !== "Delivery"),
+      avoided: GLOSSARY.avoided,
+    };
+
+    for (const declaration of [
+      "export type Delivery = never;",
+      "export type Deliveries = never;",
+      "export function deliveriesOf(): void {}",
+      "export type DeliveryId = never;",
+    ]) {
+      expect(wordsFlagged(namingViolations(withoutDelivery, planted(declaration))), declaration).toEqual([
+        "delivery",
+      ]);
+    }
+  });
+
+  it("still fires on an inflection of a word that is only avoided", () => {
+    // The other direction of the same widening: a term is excused, a word that is merely avoided is not.
+    expect(wordsFlagged(namingViolations(GLOSSARY, planted("export type Subagents = never;")))).toEqual([
+      "subagent",
+    ]);
+    expect(wordsFlagged(namingViolations(GLOSSARY, planted("export type SquadRosters = never;")))).toEqual([
+      "squad",
+    ]);
+    expect(wordsFlagged(namingViolations(GLOSSARY, planted("export function workersOf(): void {}")))).toEqual([
+      "worker",
+    ]);
+  });
+
+  it("enforces exactly the list the prose scan does, terms subtracted once", () => {
+    const terms = new Set(GLOSSARY.terms.flatMap((term) => formsOf(term)));
+    const dropped = GLOSSARY.avoided.filter((entry) => !enforceable(GLOSSARY).includes(entry));
+
+    // Derived from CONTEXT.md on every run, not listed here: a term added or removed moves this with no
+    // edit to the module. Today it drops exactly one entry, and `delivery` is the glossary's own term.
+    expect(dropped.map((entry) => `${entry.word} (${entry.under})`)).toEqual(["delivery (Handoff)"]);
+    expect(enforceable(GLOSSARY).filter((entry) => terms.has(wordsOf(entry.word).join(" ")))).toEqual([]);
+    expect(enforceable(GLOSSARY).map((entry) => entry.word)).toContain("squad");
+    // And the prose scan is silent on the same word, in every form, which it always was.
+    expect(proseViolations(GLOSSARY, planted("Two Deliveries, one Mission.", "docs/prd/x/prd.md"), [])).toEqual([]);
+  });
+
+  /**
+   * The one thing `enforceable` cannot express, kept because it is what stops the next false positive: a
+   * **multi-word** term one of whose words is avoided elsewhere. The entry stays enforceable — `log` is
+   * avoided under **Fact** and **Replay** and is not a term — while the name is still the glossary's own,
+   * so the whole-name rule carries it, and it reads `formsOf` for the same reason `enforceable` does.
+   * There is no such term today; a synthetic glossary is the only way to exercise the branch, and a branch
+   * nothing exercises is a branch that rots.
+   */
+  it("excuses a multi-word term in any form, which is the case a term subtraction cannot reach", () => {
+    const withSessionLog: Glossary = { terms: [...GLOSSARY.terms, "Session Log"], avoided: GLOSSARY.avoided };
+
+    expect(namingViolations(withSessionLog, planted("export type SessionLog = never;"))).toEqual([]);
+    expect(namingViolations(withSessionLog, planted("export type SessionLogs = never;"))).toEqual([]);
+    // The same two names against the real glossary, where `Session Log` is nobody's term.
+    expect([...new Set(wordsFlagged(namingViolations(GLOSSARY, planted("export type SessionLogs = never;"))))]).toEqual(
+      ["session", "log"],
+    );
   });
 
   it("catches an inflected name: a plural publishes the concept just as the singular does", () => {
@@ -324,6 +465,50 @@ describe("PRD prose (criterion 8)", () => {
     expect(
       wordsFlagged(proseViolations(GLOSSARY, planted("A reading of squad.", "docs/prd/planted/prd.md"))),
     ).toEqual(["squad"]);
+  });
+
+  /**
+   * QA's caveat 12, which had no test: a code span is delimited by a run of backticks and Markdown lets one
+   * wrap across a line break, so stripping spans a line at a time leaves an unmatched tick on each line.
+   * The stray closing tick then pairs with the *next* opening tick on its own line, which blanks the
+   * ordinary prose between them and leaves the following span exposed — both error directions from one
+   * wrapped span. Four such spans are live in `docs/prd/`, and this one cost QA two reproved runs on its
+   * own document.
+   */
+  it("reads a code span that wraps across a line break as one span", () => {
+    const document = ["The old `is load-bearing,", "every entry` was renamed, and `squad` is quoted here."].join(
+      "\n",
+    );
+
+    expect(proseViolations(GLOSSARY, planted(document, "docs/prd/x/prd.md"))).toEqual([]);
+    expect(proseLinesOf(document).map((prose) => prose.text).join(" ")).not.toContain("squad");
+    // Both lines survive as prose, with their numbers, and the words outside the span are still read.
+    expect(proseLinesOf(document).map((prose) => prose.line)).toEqual([1, 2]);
+    expect(proseLinesOf(document)[1].text).toContain("was renamed");
+
+    // And the falsification: stripping the same document a line at a time — what this used to do — leaves
+    // `squad` standing as prose, which is how a quoted word became a violation.
+    const lineByLine = document
+      .split("\n")
+      .map((raw) => raw.replace(/``[^`]*``/g, " ").replace(/`[^`]*`/g, " "))
+      .join(" ");
+    expect(lineByLine).toContain("squad");
+  });
+
+  it("leaves an unmatched backtick literal rather than blanking what follows it", () => {
+    // Markdown renders a lone tick as a tick. A scan that read it as an opening delimiter would blank the
+    // rest of the paragraph and under-report, which is the worse of the two failures.
+    expect(
+      wordsFlagged(proseViolations(GLOSSARY, planted("A stray ` tick, and a squad after it.", "docs/prd/x/prd.md"))),
+    ).toEqual(["squad"]);
+  });
+
+  it("does not let a span cross a blank line, so one stray tick cannot swallow a document", () => {
+    const document = ["An open ` tick.", "", "Then a squad, and a closing ` tick."].join("\n");
+    const violations = proseViolations(GLOSSARY, planted(document, "docs/prd/x/prd.md"));
+
+    expect(wordsFlagged(violations)).toEqual(["squad"]);
+    expect(violations[0].line).toBe(3);
   });
 
   it("keeps CONTEXT.md out of scope, which is the only reason a clean run is possible", () => {
