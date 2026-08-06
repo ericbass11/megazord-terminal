@@ -18,12 +18,15 @@ import {
   exportedNamesOf,
   formatViolations,
   glossaryText,
+  inflectionsOf,
   namingViolations,
   parseGlossary,
   prdDocuments,
   proseLinesOf,
+  proseMatcher,
   proseViolations,
   wordsOf,
+  type Exemption,
   type Glossary,
   type SourceText,
 } from "./glossary-check";
@@ -88,6 +91,47 @@ describe("splitting a name into words", () => {
     // `defaults` is avoided under Catalog. `catalogDefault` is not that word, and a scan that decided it
     // was would fail `harness.ts` for naming the level the techspec pinned.
     expect(wordsOf("catalogDefault")).toEqual(["catalog", "default"]);
+  });
+});
+
+/**
+ * BUG-1 was two words sitting in `prd.md` for as long as the check existed, unseen because the scan looked
+ * for `agent` and `audit` while the prose said `agents` and `auditing`. The remedy is the matcher growing
+ * the avoided word **forwards**, which is the opposite operation from stemming — the one `CLAUDE.md` rules
+ * out, because cutting a word back to a shared root is what makes a check fire on `validateHandoff`.
+ */
+describe("inflections of an avoided word", () => {
+  it("grows the word forwards into a closed set of endings", () => {
+    expect(new Set(inflectionsOf("agent"))).toEqual(new Set(["agent", "agents", "agented", "agenting"]));
+    expect(new Set(inflectionsOf("audit"))).toEqual(new Set(["audit", "audits", "audited", "auditing"]));
+    expect(new Set(inflectionsOf("dispatch"))).toEqual(
+      new Set(["dispatch", "dispatches", "dispatched", "dispatching"]),
+    );
+    // A final `e` is dropped before `-ing`, and `-d` alone makes the past: never `interfaceing`.
+    expect(new Set(inflectionsOf("interface"))).toEqual(
+      new Set(["interface", "interfaces", "interfaced", "interfacing"]),
+    );
+    // Consonant + `y` pluralises as `-ies`, and takes no `-ing`: `historying` is not a word.
+    expect(new Set(inflectionsOf("history"))).toEqual(new Set(["history", "histories", "historied"]));
+  });
+
+  it("never shortens a word, which is what keeps it from being a stemmer", () => {
+    for (const word of ["log", "validation", "interface", "history", "dispatch", "TODO"]) {
+      // Every form keeps the whole word, minus at most the final `e` or `y` English orthography drops.
+      const kept = word.replace(/[ey]$/i, "");
+      for (const form of inflectionsOf(word)) {
+        expect(form.startsWith(kept), `${word} -> ${form}`).toBe(true);
+      }
+    }
+    // The two roots a stemmer would reach for, and the reason it is not allowed to.
+    expect(inflectionsOf("validation")).not.toContain("validate");
+    expect(inflectionsOf("defaults")).not.toContain("default");
+  });
+
+  it("bends only the last word of a multi-word entry", () => {
+    // `lead agents`, never `leads agent`: English inflects the noun the phrase ends on.
+    expect(proseMatcher("lead agent").test("two lead agents")).toBe(true);
+    expect(proseMatcher("lead agent").test("two leads agent")).toBe(false);
   });
 });
 
@@ -171,6 +215,21 @@ describe("exported domain names (criterion 8)", () => {
     ]);
   });
 
+  it("catches an inflected name: a plural publishes the concept just as the singular does", () => {
+    expect(wordsFlagged(namingViolations(GLOSSARY, planted("export type Squads = readonly string[];")))).toEqual([
+      "squad",
+    ]);
+    expect(wordsFlagged(namingViolations(GLOSSARY, planted("export function dispatching(): void {}")))).toEqual([
+      "dispatch",
+    ]);
+  });
+
+  it("still does not shorten: `defaults` is avoided and `catalogDefault` is still not it", () => {
+    // The precedence level the techspec pins. Inflection grows a word forwards, so the avoided `defaults`
+    // never reaches the singular `default` this name ends on.
+    expect(namingViolations(GLOSSARY, planted("export const catalogDefault = 1;"))).toEqual([]);
+  });
+
   it("does not read a stem: validateHandoff is not validation", () => {
     // Recorded in CLAUDE.md: `validateHandoff` names a judgement of a Handoff, not a Gate. A stem-based
     // scan would flag it, which is why this one is not stem-based.
@@ -231,6 +290,27 @@ describe("PRD prose (criterion 8)", () => {
     });
   });
 
+  /**
+   * BUG-1: both of these forms sat in `prd.md` and the check said nothing. The singulars had been
+   * reworded when this module was written; the plural and the participle were never looked for, because
+   * the matcher could not have found them.
+   */
+  it("fails on an inflected form, which is what BUG-1 escaped through", () => {
+    const document = planted(
+      "Wrong assumptions about how real agents behave, and auditing needs no one has expressed.",
+      "docs/prd/planted/prd.md",
+    );
+    expect([...wordsFlagged(proseViolations(GLOSSARY, document))].sort()).toEqual(["agent", "audit"]);
+  });
+
+  it("does not read a stem or a substring, in any inflection", () => {
+    // Scanned with the exemption table emptied, so nothing here is being excused: a stem-based scan would
+    // flag `Catalogs` for `log` and `validated` for `validation`, and this one flags neither.
+    expect(
+      proseViolations(GLOSSARY, planted("Catalogs of validated Handoffs.", "docs/prd/planted/prd.md"), []),
+    ).toEqual([]);
+  });
+
   it("reads a fenced code block as code, not as prose", () => {
     const document = ["Before the fence.", "```ts", "export type Squad = never;", "```", "After it."].join("\n");
     expect(proseViolations(GLOSSARY, planted(document, "docs/prd/planted/techspec.md"))).toEqual([]);
@@ -278,12 +358,12 @@ describe("the prose exemptions", () => {
   });
 
   /**
-   * Each exemption is falsified the way `CLAUDE.md` demands of a type-level proof: break it and confirm
-   * the thing it claims to hold really stops holding. Scanned with no exemptions, every one of these words
-   * fires; scanned with the table, none does. An entry that fails this test is an entry excusing nothing,
-   * and the honest move then is to delete it, not to keep it "just in case".
+   * Half the claim, and the weaker half: the **mechanism** excuses the word. Scanned with no exemptions the
+   * word fires; scanned with the table it does not. This proves `proseViolations` honours the entry — it
+   * says nothing about whether the entry is needed, because the carrier sentence is one the test writes
+   * itself. That was BUG-2, and the test below is the other half.
    */
-  it("is load-bearing, every entry", () => {
+  it("excuses the word it names, mechanically", () => {
     for (const exemption of PROSE_EXEMPTIONS) {
       const document = planted(`One line that says ${exemption.word} and no more.`, "docs/prd/x/prd.md");
 
@@ -294,5 +374,48 @@ describe("the prose exemptions", () => {
         exemption.word,
       );
     }
+  });
+
+  /**
+   * The load-bearing claim, measured where `CLAUDE.md` says to measure it: at the guarantee, not at the
+   * test. The documents this check governs are the only place an exemption can be carrying anything, so
+   * they are what the scan reads. An entry with no line to excuse is deleted — `output` was, and it is the
+   * whole reason this test exists rather than the one above it.
+   */
+  it("carries at least one real line of the documents it governs, every entry", () => {
+    const governed = [...prdDocuments(), ...adrDocuments()];
+    const carried = new Set(
+      proseViolations(GLOSSARY, governed, []).map((violation) => violation.word.toLowerCase()),
+    );
+    const dead = PROSE_EXEMPTIONS.filter((exemption) => !carried.has(exemption.word.toLowerCase()));
+
+    expect(
+      dead.map((exemption) => exemption.word),
+      "these exemptions excuse nothing in docs/prd or docs/adr: delete them, or say in `because` what " +
+        "prose they are cover for and why that prose is not written yet",
+    ).toEqual([]);
+  });
+
+  /**
+   * And the falsification of the test itself. A word `CONTEXT.md` avoids and the documents never use would
+   * pass the mechanical check — it fires without the table and is excused with it — and be reported dead by
+   * the real-tree check. Without this, "measured against the tree" would be a claim nobody had run.
+   */
+  it("would report a dead entry, which the mechanical check cannot", () => {
+    const governed = [...prdDocuments(), ...adrDocuments()];
+    const carried = new Set(
+      proseViolations(GLOSSARY, governed, []).map((violation) => violation.word.toLowerCase()),
+    );
+    const uncarried = GLOSSARY.avoided.filter((entry) => !carried.has(entry.word.toLowerCase()));
+    expect(uncarried.length, "every avoided word is live in the documents, so nothing can be dead").toBeGreaterThan(0);
+
+    const invented: Exemption = { word: uncarried[0].word, because: "a reason long enough to pass the reason check" };
+    const document = planted(`One line that says ${invented.word} and no more.`, "docs/prd/x/prd.md");
+
+    // Passes the mechanical check, exactly as `output` did.
+    expect(wordsFlagged(proseViolations(GLOSSARY, document, []))).toContain(invented.word);
+    expect(wordsFlagged(proseViolations(GLOSSARY, document, [invented]))).not.toContain(invented.word);
+    // And is dead against the tree.
+    expect(carried.has(invented.word.toLowerCase())).toBe(false);
   });
 });

@@ -867,7 +867,8 @@ can plant a violation instead of the test only ever asserting that the tree is c
 - `CONTEXT.md` is read and never scanned — every `_Avoid_` line is a hit by construction — and
   `docs/PRODUTO.md` stays out because SDD is forward-only.
 
-Matching is by **word**, never substring and never stem. `Catalog` contains `log`; `catalogDefault` is not
+Matching is by **word and its inflections**, never substring and never stem — see "Grow the avoided word
+forwards" below. `Catalog` contains `log`; `catalogDefault` is not
 the avoided `defaults`; `validateHandoff` contains no `validation`. An identifier is split on case and
 punctuation, and a multi-word entry (`lead agent`, `agent list`) matches only as consecutive words. One
 mechanic worth keeping: **an entry the glossary wrote in capitals matches case-sensitively.** `TODO` is
@@ -884,13 +885,18 @@ through the edges" (→ "Zord execution"), "a real **debt**, tracked" (→ "real
 because ordinary English, a TypeScript keyword or the vocabulary the flow uses about itself: 33 entries in
 `PROSE_EXEMPTIONS`, each carrying its reason as a string.
 
-Two properties make that table honest, and both are tests:
+Three properties make that table honest, and all three are tests:
 
 - **Every entry names a word `CONTEXT.md` really avoids.** An exemption for a word the glossary does not
   list is fiction that outlives the sentence it was written for.
-- **Every entry is falsified.** The test scans a carrier sentence with the table and with `[]`, and
-  asserts the word fires without it and not with it. An exemption that excuses nothing gets deleted, not
-  kept "just in case" — the same standard `CLAUDE.md` already sets for a type-level probe.
+- **Every entry is excused by the mechanism.** The test scans a carrier sentence with the table and with
+  `[]`, and asserts the word fires without it and not with it.
+- **Every entry carries a real line of `docs/prd/` or `docs/adr/`.** Measured with the table replaced by
+  `[]` over `prdDocuments()` and `adrDocuments()`. An exemption that excuses nothing gets deleted, not
+  kept "just in case".
+
+The second and third are not the same claim, and mistaking one for the other was BUG-2 — see
+"A test that writes its own carrier measures the mechanism, not the tree".
 
 The twelve ordinary-vocabulary words this file recorded were not the whole list: 30 distinct avoided words
 were actually hit, among them `cast` (a type assertion, not a Roster), `memory` ("state lives in memory" is
@@ -937,14 +943,81 @@ when there is one). Added, with its spoken form `parada`.
 it is specific to this domain, and a branded amount and a branded timestamp are general programming
 concepts. What is domain-specific about them is a decision, and that lives in ADR 0004.
 
-### The adherence scan matches words, so inflections escape it
+### Grow the avoided word forwards; a stemmer cuts it back. Only one of the two is safe
 
-Found while reviewing Task 10 by planting prose into `prd.md`: `maestro`, `squad`, `subtask` and
-`worker` were all caught, and **`dispatches` was not** — `dispatch` is the `_Avoid_` entry and the
-scan matches whole words, never stems. That is deliberate, and the alternative is worse: a stem
-scan flags `validateHandoff` for `validation` and `Catalog` for `log`, which is how a check gets
-switched off in its second week. Live with the hole, and when a violation slips through in a plural
-or a verb form, add that form to the `_Avoid_` list rather than making the matcher smarter.
+**Supersedes the earlier rule on this page** — "live with the hole, and add the inflected form to the
+`_Avoid_` list" — which BUG-1 is the evidence against. Task 10 found the hole by planting `dispatches`
+into `prd.md` and watching nothing happen, and then never swept the documents for forms already in them:
+`real agents behave` and `designed for auditing needs` had been sitting in `prd.md` since it was written.
+A remedy that records only the forms someone has already tripped over leaves the sweep manual, so the
+next plural waits for the next QA.
+
+The matcher now expands each avoided word into its inflections (`inflectionsOf` in
+`tools/glossary-check.ts`), and the reason this is not the stem-based scan this file rules out is
+mechanical, not a matter of degree:
+
+- **A stemmer cuts a word back** to a root that unrelated words share. That is what makes `validation`
+  reach `validateHandoff` and `log` reach `Catalog` — and a check that fails on correct code is a check
+  switched off in its second week.
+- **Inflection grows the word forwards.** Every form it produces still carries the avoided word:
+  `log`, `logs`, `loged`, `loging` — none of them is `Catalog`. It can add a false positive only for a
+  real inflection of a word the glossary really avoids, which is exactly the thing being looked for.
+
+The set is closed and deliberately small: plural, past, present participle, with the two orthographic
+rules English forces (`interface` → `interfacing`, not `interfaceing`; `history` → `histories`, not
+`historys`). No irregular plurals, no doubled consonants (`logging`), no `-al`/`-ly` derivations —
+`historical` is a different word, and reaching for it is stemming again. Only the last word of a
+multi-word entry bends: `lead agents`, never `leads agent`.
+
+Two consequences worth knowing before touching it:
+
+- **A form the closed set cannot derive goes beside the set, never into `CONTEXT.md`.** The glossary is
+  the team's vocabulary; the matcher's mechanics are not vocabulary, and a reader picking the language up
+  does not need to be told that the plural of an avoided word is also avoided. There is no such form today
+  and no empty table for one, which would be the always-zero field this file keeps warning about.
+- **The name scan has no exemption table**, so widening it there was measured first: all 135 exported names
+  of `engine/domain/` stay clean. `catalogDefault` still passes for the right reason — the avoided entry is
+  `defaults`, and growing forwards never reaches the shorter `default`.
+
+What inflection changed on the day it landed: `interface` and `block` stopped being dead exemptions,
+because their only carriers were `interfaces` (techspec) and `blocks` (PRD and tasks); `directive` had to
+be **added**, because `qa.md` says "75 `directives`" about `@ts-expect-error` and a bugfix does not reword
+QA's document; and `output` was deleted, having no carrier in any form.
+
+### A test that writes its own carrier measures the mechanism, not the tree
+
+BUG-2, and the same shape as "Falsify at the guarantee, not at the test". `is load-bearing, every entry`
+built its own sentence — `` `One line that says ${exemption.word} and no more.` `` — so it passed for any
+word `CONTEXT.md` avoids, whether or not a document contained it. Three of 33 exemptions excused nothing
+and the test that existed to catch that could not.
+
+The fix is not a better sentence, it is a different subject: the load-bearing claim is measured over
+`prdDocuments()` and `adrDocuments()`. The mechanical check is kept, renamed to what it actually proves,
+because "the table is honoured" is worth pinning too — it is just not evidence that an entry is needed.
+And the new check is itself falsified by a test that derives a genuinely-uncarried avoided word from the
+tree and shows the mechanical check passing for it while the real-tree check reports it dead. A check on a
+check needs the same standard as the code.
+
+Generalised, for the next reviewer probe: **when a test constructs the input it then judges, it is testing
+the function; when it reads the tree, it is testing the delivery.** Both are useful and they are not
+interchangeable, and a name like "is load-bearing" claiming the second while doing the first is worse than
+having no test, because it stops anyone looking.
+
+The price, and it is the right price: a `tools/` test now fails when a **document** is reworded. Delete
+`interfaces` from `techspec.md:78` and the `interface` exemption has no carrier; rewrite `qa.md` without
+"75 `directives`" and `directive` has none. Some entries are held up by a single line — `spec`, `setup`,
+`conversation`, `rejection` and `feature` each have exactly one, and `directive`'s only carrier is `qa.md`.
+That is the table staying honest, not the test being brittle: the answer when it goes red is to delete the
+entry the message names, which is one line and takes less thought than arguing with it. What must not
+happen is the reverse — planting a sentence somewhere so an exemption survives.
+
+### Reverting a plant with `git checkout <file>` throws away your own edits to it
+
+Small, and it cost a redo. Planting a violation in `prd.md` to re-arm the adherence check, then reverting
+with `git checkout docs/prd/mission-engine/prd.md`, also reverted the two rewordings the same task had
+just made to that file — the plant and the fix were in one working-tree change and `git checkout` does not
+know which is which. Plant into a file you have not edited, or remove the plant the way you added it
+(delete the appended line), and check `git diff --stat` afterwards rather than trusting the revert.
 
 ### Vitest boundaries
 
@@ -988,6 +1061,6 @@ therefore has **no working linter**, which matters whenever a review step wants 
   asserts that.
 - The **adherence checks** are `tools/glossary-check.ts` (the scanning library), with
   `tools/glossary-check.test.ts` for criterion 8 and `tools/prd-structure.test.ts` for criteria 9 and 10.
-  They are part of `npm test`, which is 449 tests. `tools/` uses `node:fs` and is the only place in the
+  They are part of `npm test`, which is 458 tests. `tools/` uses `node:fs` and is the only place in the
   repo that reads the tree.
 - The **decisions** are `docs/adr/0001..0007`, one per entry of the techspec's "Decisions worth an ADR".

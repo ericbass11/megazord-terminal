@@ -11,9 +11,9 @@ check governs; nothing in `engine/` is at fault.
 - **Observed**: two words `CONTEXT.md` lists under `_Avoid_`, neither of them in
   `PROSE_EXEMPTIONS`, sit in `prd.md` prose outside any fence and are not reported, because
   `proseMatcher` matches whole words and both appear inflected:
-  - `docs/prd/mission-engine/prd.md:109` — "wrong assumptions about how real **agents** behave".
+  - `docs/prd/mission-engine/prd.md:109` — "wrong assumptions about how real `agents` behave".
     `agent` is `_Avoid_` under **Zord**. `\bagent\b` does not match `agents`.
-  - `docs/prd/mission-engine/prd.md:113` — "designed for **auditing** needs no one has expressed
+  - `docs/prd/mission-engine/prd.md:113` — "designed for `auditing` needs no one has expressed
     yet". `audit` is `_Avoid_` under **Replay**, and the sentence is about the Replay — the concept
     that word is avoided for. `\baudit\b` does not match `auditing`.
 
@@ -58,7 +58,69 @@ check governs; nothing in `engine/` is at fault.
   ```
   docs/prd/mission-engine/prd.md:154 uses "worker" (_Avoid_ under Zord) in: …
   ```
-- **Status**: open
+- **Status**: fixed
+- **Fix**: the cause was not the two sentences — it was that **nothing could have found them**, so the
+  sweep QA performed by hand had no way of being repeated. Two changes, in that order:
+
+  1. `tools/glossary-check.ts` grows every avoided word **forwards** into its own inflections
+     (`inflectionsOf`): the word, its plural, its past and its present participle, as a closed set with the
+     orthography English needs — `agent`/`agents`, `audit`/`auditing`, `interface`/`interfacing`,
+     `history`/`histories`. Only the last word of a multi-word entry bends (`lead agents`, never
+     `leads agent`), and both scans use it: `proseMatcher` for prose and `containsRun` for exported names,
+     because `export type Squads` publishes a concept exactly as `export type Squad` does.
+
+     This is **not** the stem-based matcher `CLAUDE.md` rules out, and the distinction is mechanical rather
+     than a matter of degree. A stemmer cuts a word *back* to a root that unrelated words share, which is
+     how `validation` reaches `validateHandoff` and `log` reaches `Catalog`. Growing forwards can only ever
+     produce strings that still carry the avoided word: `log`, `logs`, `loged`, `loging` — none of them is
+     `Catalog`. Pinned by `does not read a stem or a substring, in any inflection`, which scans
+     `Catalogs of validated Handoffs.` with the exemption table **emptied** and reports nothing.
+
+     Measured before it was turned on, because the name scan has no exemption table to absorb a false
+     positive: all 135 exported names of `engine/domain/` stay clean, `catalogDefault` included — the
+     avoided entry is `defaults`, and growing a word forwards never reaches the shorter `default`.
+
+  2. The two sentences were then reworded, which is the declared policy: `prd.md:109` now reads
+     "how real Zords behave", and `prd.md:113` "designed to answer questions no one has asked yet".
+     The quotations in this document put the offending forms in inline code spans, which the scan reads as
+     quoting rather than naming — the same treatment the techspec's "the reading is `stepsOf`, not
+     `project`" already relies on.
+
+  Nothing was added to `CONTEXT.md`. `CLAUDE.md` prescribed adding the inflected form to the `_Avoid_`
+  list, and that remedy is what this bug is evidence against: it only ever records the forms someone has
+  already tripped over, so the sweep stays manual and the next plural waits for the next QA. It also puts
+  matcher mechanics into the one document `CLAUDE.md` reserves for shared vocabulary — a reader picking
+  the language up does not need to be told that the plural of a word to avoid is also to be avoided.
+  A form the closed set genuinely cannot derive (an irregular plural, a doubled consonant) belongs beside
+  the set in `inflectionsOf`, and `CLAUDE.md` now says so. There is no such form today, and an empty table
+  for one would be the always-zero field this repository keeps warning about.
+- **Proof**:
+
+  ```
+  # the fix, before the reword: the check now sees what escaped it
+  $ npx vitest run tools/glossary-check.test.ts
+  docs/prd/mission-engine/prd.md:109 uses "agent" (_Avoid_ under Zord) in: real agents behave. …
+  docs/prd/mission-engine/prd.md:113 uses "audit" (_Avoid_ under Replay) in: … designed for auditing …
+  docs/prd/mission-engine/bugs.md:14  uses "agent" (_Avoid_ under Zord) in: …
+  docs/prd/mission-engine/bugs.md:16  uses "audit" (_Avoid_ under Replay) in: …
+   Tests  1 failed | 25 passed (26)
+
+  # after the reword and the re-quoting
+  $ npm test
+   Test Files  15 passed (15)
+        Tests  458 passed (458)
+
+  # re-armed against the real tree, planted and reverted — every form inflected
+  $ printf 'The maestro dispatches subtasks to workers inside squads.\n' >> docs/prd/mission-engine/prd.md
+  $ npx vitest run tools/glossary-check.test.ts
+  prd.md:154 uses "maestro" (_Avoid_ under Core)        prd.md:154 uses "worker" (_Avoid_ under Zord)
+  prd.md:154 uses "dispatch" (_Avoid_ under Delegation) prd.md:154 uses "squad" (_Avoid_ under Combination)
+  prd.md:154 uses "subtask" (_Avoid_ under Slice)
+   Tests  1 failed | 34 passed (35)
+  ```
+
+  `dispatches`, `subtasks`, `workers` and `squads` are all plural, and all five are reported. Before this
+  fix that plant produced one hit — `maestro`, the only word in it the matcher could see.
 
 ## BUG-2 — Three prose exemptions excuse nothing, and the test that claims otherwise measures a synthetic sentence
 
@@ -104,4 +166,57 @@ check governs; nothing in `engine/` is at fault.
 
   All 30 other distinct words hit at least once, and every one of those is correctly excused — see
   `qa.md`, "The five risky spots, judged", item 4.
-- **Status**: open
+- **Status**: fixed
+- **Fix**: the test was corrected first, and then the table was made honest against what it reported.
+
+  **The test.** The old `is load-bearing, every entry` was renamed to `excuses the word it names,
+  mechanically`, because that is all it ever proved: it writes its own carrier sentence, so it passes for
+  any word `CONTEXT.md` avoids. It is kept, unchanged, because the mechanism is worth pinning — it is just
+  not the load-bearing claim. Two tests were added beside it:
+
+  - `carries at least one real line of the documents it governs, every entry` scans
+    `prdDocuments()` and `adrDocuments()` with the table replaced by `[]`, and fails naming any entry with
+    no hit. The failure message says what to do: delete the entry, or say in `because` what prose it is
+    cover for.
+  - `would report a dead entry, which the mechanical check cannot` falsifies the new test rather than
+    asserting it. It derives from the tree a word the glossary avoids and the documents never use, shows
+    that the mechanical check passes for it — fires without the table, excused with it — and that the
+    real-tree check reports it dead. Without this, "measured against the tree" would be a claim nobody
+    had run.
+
+  **The table.** Of the three entries QA found dead, two were not dead at all — they were carriers the
+  matcher could not see, which is BUG-1 in the other direction:
+
+  - `interface` is carried by `techspec.md:78`, "The `interfaces` agreed before any code is written". QA
+    named this line and said the plural was what hid it. With `inflectionsOf` the line is a real hit and
+    the exemption really excuses it.
+  - `block` is carried by `prd.md:136` and two lines of `tasks.md`, all of them `blocks`.
+  - `output` had no carrier in any form, in any document, and was **deleted**. QA's reading was right: the
+    word lives only in `AgentReport`, which is a property name in `engine/ports/` — outside the name scan's
+    scope and invisible to the prose scan. The module's own rule then applies without argument. If a later
+    PRD writes "the Zord's own `output`", the check will fire and the answer is `Handoff`, which is exactly
+    the behaviour the exemption was suppressing for no one.
+
+  One entry was **added**: `directive`, avoided under **Command**, and carried twice by `qa.md` — "75
+  `directives` in `engine/` open their comment" and "deletes all three `directives` in one change". Both
+  are TypeScript compiler `directives`, category one of this table, and both became visible for the same
+  reason `interfaces` did. `qa.md` is QA's document and is not the bugfix's to reword, so the honest move
+  is the exemption; without it the check reports a false positive on the file that reproves it.
+- **Proof**:
+
+  ```
+  # the corrected test, falsified: `output` put back into the table
+  $ npx vitest run tools/glossary-check.test.ts
+   × carries at least one real line of the documents it governs, every entry
+  AssertionError: these exemptions excuse nothing in docs/prd or docs/adr: delete them, or say in
+  `because` what prose they are cover for and why that prose is not written yet:
+  expected [ 'output' ] to deeply equal []
+   Tests  1 failed | 34 passed (35)
+
+  # `output` removed again — the table is honest and every remaining entry has a real carrier
+  $ npx vitest run tools/glossary-check.test.ts
+   Tests  35 passed (35)
+  ```
+
+  The old test cannot produce that red: with `output` in the table it passes, because the sentence it
+  measures is one it wrote itself. That is the defect, and the red above is the fix.

@@ -106,11 +106,11 @@ What the demand did not say, and what was decided.
 ## Open risks
 
 1. **Modelling invariants before the runtime exists** can bake in wrong assumptions about how
-   real agents behave. Mitigated by keeping every runtime concern behind the `AgentRunner` port,
+   real Zords behave. Mitigated by keeping every runtime concern behind the `AgentRunner` port,
    so a wrong guess costs an adapter and not the domain.
 2. **"The Core holds no execution capability" is partly a type-level guarantee**, and a cast can
    bypass it. Mitigated with a runtime guard plus an explicit review item.
-3. **The Replay may be over-modelled** if it is designed for auditing needs no one has expressed
+3. **The Replay may be over-modelled** if it is designed to answer questions no one has asked
    yet. Kept to what the Surfaces already promise, nothing more.
 4. **`evolve` does not check that an Event belongs to its Mission**, found in Task 9, so a
    hand-written log mixing two Missions folds to nonsense. `replay` deliberately does not filter

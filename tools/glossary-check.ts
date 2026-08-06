@@ -40,6 +40,12 @@
  * entry such as `lead agent`. Prose matches on word boundaries for the same reason. An entry written in
  * capitals — `TODO`, `PR` — matches case-sensitively, because capitals are what the glossary meant: the
  * code marker `TODO`, not the `todo` that is a task status in `tasks.md`.
+ *
+ * A whole word, but **every inflection of it**: see `inflectionsOf`. `agents` and `auditing` sat in
+ * `prd.md` for as long as this check existed and it never said so, because it looked for `agent` and
+ * `audit`. Growing the word forwards into its own plural and verb forms is the opposite operation from
+ * stemming, which cuts a word back to a root it shares with unrelated words — that is what would flag
+ * `validateHandoff` for `validation`. `Catalog` is still not `log`, `logs`, `logged` or `logging`.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -138,15 +144,76 @@ export function wordsOf(name: string): readonly string[] {
     .map((word) => word.toLowerCase());
 }
 
-function startsWithRun(within: readonly string[], run: readonly string[], at: number): boolean {
-  return run.every((word, offset) => within[at + offset] === word);
+/**
+ * Every inflection of one word: the word itself, its plural, its past and its present participle.
+ *
+ * This is what closes the hole BUG-1 was: the scan matched whole words, so `agent` was caught and
+ * `agents` was not, and nobody had swept the documents for a form the matcher could not see. Sweeping by
+ * hand fixes the day it is done; growing the matcher forwards makes the sweep happen on every
+ * `npm test`.
+ *
+ * It is **not** stemming, and the difference is the whole reason this is safe. A stemmer cuts a word back
+ * to a root that unrelated words share — which is how `validation` would reach `validateHandoff` and `log`
+ * would reach `Catalog`, and how a check gets switched off in its second week. This goes the other way:
+ * from the exact word the glossary wrote, forwards, into a **closed** set of endings. Every form it
+ * produces still has the avoided word as its own prefix, so nothing it matches is a different word.
+ *
+ * Deliberately incomplete, and it must stay small enough to read: no irregular plurals (`indices`), no
+ * doubled consonants (`logging`), no `-al`/`-ly` derivations (`typeal` is not a word and `historical` is a
+ * different one). A form it cannot derive is added here, beside the set, and never to `CONTEXT.md` — the
+ * glossary is for the team's vocabulary, not for the matcher's mechanics.
+ */
+export function inflectionsOf(word: string): readonly string[] {
+  const forms = new Set<string>([word]);
+
+  if (/[^aeiou]y$/i.test(word)) {
+    // `history` → `histories`, not `historys`.
+    const stem = word.slice(0, -1);
+    forms.add(`${stem}ies`);
+    forms.add(`${stem}ied`);
+    return [...forms];
+  }
+
+  forms.add(/(?:s|x|z|ch|sh)$/i.test(word) ? `${word}es` : `${word}s`);
+
+  if (/e$/i.test(word)) {
+    // `interface` → `interfaced`, `interfacing`; the final `e` is dropped, not doubled.
+    forms.add(`${word}d`);
+    forms.add(`${word.slice(0, -1)}ing`);
+  } else {
+    forms.add(`${word}ed`);
+    forms.add(`${word}ing`);
+  }
+
+  return [...forms];
 }
 
-function containsRun(within: readonly string[], run: readonly string[]): boolean {
-  if (run.length === 0) {
-    return false;
+/** The words of an avoided entry, split so the last one can be matched in any inflection. */
+type AvoidedRun = {
+  /** Every word but the last, matched exactly — `lead` of `lead agent`. */
+  readonly head: readonly string[];
+  /** The last word, in every inflection — `agent`, `agents`, `agented`, `agenting`. */
+  readonly tail: ReadonlySet<string>;
+};
+
+function runOf(word: string): AvoidedRun {
+  const words = wordsOf(word);
+  if (words.length === 0) {
+    // An entry with no words matches nothing: an empty tail can never contain a word of the name.
+    return { head: [], tail: new Set() };
   }
-  for (let at = 0; at + run.length <= within.length; at += 1) {
+  const last = words[words.length - 1];
+  return { head: words.slice(0, -1), tail: new Set(inflectionsOf(last)) };
+}
+
+function startsWithRun(within: readonly string[], run: AvoidedRun, at: number): boolean {
+  const headMatches = run.head.every((word, offset) => within[at + offset] === word);
+  return headMatches && run.tail.has(within[at + run.head.length] ?? "");
+}
+
+function containsRun(within: readonly string[], run: AvoidedRun): boolean {
+  const span = run.head.length + 1;
+  for (let at = 0; at + span <= within.length; at += 1) {
     if (startsWithRun(within, run, at)) {
       return true;
     }
@@ -169,7 +236,11 @@ export type Violation = {
   readonly file: string;
   /** 1-based, so it matches what an editor shows. */
   readonly line: number;
-  /** The avoided word, exactly as `CONTEXT.md` writes it. */
+  /**
+   * The avoided word, exactly as `CONTEXT.md` writes it — the entry, not the form found. A line saying
+   * `agents` is reported as `agent`, because that is the entry a reader has to go and look up; `named`
+   * carries the line itself, so the inflection is visible right beside it.
+   */
   readonly word: string;
   /** The glossary term whose `_Avoid_` list carries that word. */
   readonly under: string;
@@ -374,10 +445,15 @@ function termWords(glossary: Glossary): ReadonlySet<string> {
  * is the correct name for the consolidated outcome of a Mission and a scan without this would reprove
  * the model for using its own vocabulary. Nothing else is exempt here — an exported domain name that
  * carries an avoided word is the thing this check exists to catch.
+ *
+ * The word matches in every inflection (`inflectionsOf`), the same as in prose: `export type Squads`
+ * publishes `squad` as the name of a concept exactly as `export type Squad` does. This scan has no
+ * exemption table to absorb a false positive, so the expansion was measured against `engine/domain/`
+ * before it was turned on — all 135 exported names stay clean, `catalogDefault` included.
  */
 export function namingViolations(glossary: Glossary, sources: readonly SourceText[]): readonly Violation[] {
   const defined = termWords(glossary);
-  const avoided = glossary.avoided.map((entry) => ({ ...entry, words: wordsOf(entry.word) }));
+  const avoided = glossary.avoided.map((entry) => ({ ...entry, run: runOf(entry.word) }));
   const violations: Violation[] = [];
 
   for (const source of sources) {
@@ -387,7 +463,7 @@ export function namingViolations(glossary: Glossary, sources: readonly SourceTex
         continue;
       }
       for (const entry of avoided) {
-        if (containsRun(words, entry.words)) {
+        if (containsRun(words, entry.run)) {
           violations.push({
             file: source.file,
             line: exported.line,
@@ -414,24 +490,33 @@ export type Exemption = {
  *
  * Every entry is a word the repository's own documents cannot write around, because in that sentence it
  * is ordinary English, a TypeScript keyword, or the vocabulary the flow uses to talk about itself — not
- * the name of a domain concept. Each one carries its reason, and `glossary-check.test.ts` proves two
- * things about every single one: that it names a word `CONTEXT.md` really does avoid, and that removing
- * it makes the scan fire. An exemption that is not load-bearing is a lie in a list nobody re-reads.
+ * the name of a domain concept. Each one carries its reason, and `glossary-check.test.ts` proves three
+ * things about every single one: that it names a word `CONTEXT.md` really does avoid, that the exemption
+ * mechanism really excuses it, and that **the tree contains a line it excuses**. An exemption that is not
+ * load-bearing is a lie in a list nobody re-reads.
+ *
+ * That third property is measured against `prdDocuments()` and `adrDocuments()`, which is what makes it
+ * evidence. Measured against a sentence the test writes itself, it passed for any word the glossary
+ * avoids, and three entries sat here excusing nothing: `interface` and `block`, whose only carriers were
+ * `interfaces` and `blocks` and so were invisible until the matcher learned inflections, and `output`,
+ * which had no carrier at all and was deleted. The list shrinks when a word stops being needed.
  *
  * What is **not** here is the more interesting list. `agent`, `audit`, `history`, `obligation` and `debt`
  * all appeared in the PRD and the techspec while this check was being written, and every one of them was
  * a real hit: the techspec was defining a Clause as "one obligation", calling the Replay "the audit
- * surface", and putting `agent` where `Zord` belongs. Those lines were reworded. Rewording is the answer
+ * surface", and putting `agent` where `Zord` belongs. Those lines were reworded — as were `real agents`
+ * and `auditing needs`, the two inflected survivors the first pass could not see. Rewording is the answer
  * whenever the prose is naming a domain concept; an exemption is the answer only when it is not.
  */
 export const PROSE_EXEMPTIONS: readonly Exemption[] = [
-  // TypeScript keywords and ordinary technical vocabulary — the twelve recorded in CLAUDE.md.
+  // TypeScript keywords and ordinary technical vocabulary. Eleven of the twelve CLAUDE.md records, plus
+  // `directive`; `output` is gone, because nothing in the documents needed it.
   { word: "type", because: "TypeScript's keyword; prose about a type-level guarantee cannot avoid it" },
   { word: "interface", because: "TypeScript's keyword, and how a port is written" },
   { word: "function", because: "TypeScript's keyword, and what `decide` and `evolve` are" },
   { word: "kind", because: "the discriminant of every union here, and ordinary English: 'of any kind'" },
   { word: "input", because: "ordinary English for what crosses a boundary: 'with no human input'" },
-  { word: "output", because: "the other half of the same ordinary English" },
+  { word: "directive", because: "a compiler directive, `@ts-expect-error`; a Command is the domain intent" },
   { word: "result", because: "ordinary English for what a call answers: 'the result of decide'" },
   { word: "module", because: "what TypeScript calls a file, and what this PRD calls `engine/`" },
   { word: "context", because: "bounded context, and the name of the glossary file itself" },
@@ -465,11 +550,28 @@ export const PROSE_EXEMPTIONS: readonly Exemption[] = [
   { word: "agreement", because: "one of the four candidate bounded contexts, and a heading of CONTEXT.md" },
 ];
 
-function proseMatcher(word: string): RegExp {
-  const parts = word.split(/[\s-]+/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+function escaped(part: string): string {
+  return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The prose matcher for one avoided entry: whole words, and the last word in every inflection.
+ *
+ * Only the last word is inflected, because that is the one an English sentence bends: `lead agents`, not
+ * `leads agent`. Longest form first in the alternation, so the match cannot anchor on the bare word and
+ * leave a plural's `s` outside it — a hit reported as the singular would read as a different violation
+ * from the one in the file.
+ */
+export function proseMatcher(word: string): RegExp {
+  const parts = word.split(/[\s-]+/);
+  const head = parts.slice(0, -1).map(escaped);
+  const tail = inflectionsOf(parts[parts.length - 1] ?? "")
+    .map(escaped)
+    .sort((left, right) => right.length - left.length)
+    .join("|");
   // A word the glossary wrote in capitals means the capitals: `TODO` the marker, not `todo` the status.
   const flags = word === word.toUpperCase() ? "" : "i";
-  return new RegExp(`\\b${parts.join("[\\s-]+")}\\b`, flags);
+  return new RegExp(`\\b${[...head, `(?:${tail})`].join("[\\s-]+")}\\b`, flags);
 }
 
 /**
@@ -477,7 +579,7 @@ function proseMatcher(word: string): RegExp {
  *
  * Two exemptions on top of the removals `proseLinesOf` already did: a word that is itself a glossary term
  * is never a violation (`Delivery`), and the words in `exempted`, each with its reason. Pass `[]` to see
- * what the exemptions are actually carrying — the test does exactly that.
+ * what the exemptions are actually carrying — the test does exactly that, over the real documents.
  */
 export function proseViolations(
   glossary: Glossary,
