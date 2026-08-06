@@ -1586,6 +1586,72 @@ The server also checks `Origin`, which the RFC does not require: a WebSocket is 
 restricted, so any page a browser loads could otherwise open one into a live process. It binds to
 loopback with no option to change it.
 
+### A scan over a served document meets the prose that argues its own rule — twice, to me
+
+`CLAUDE.md` already records this for `any` and `@ts-expect-error` in `engine/`, and for fenced blocks in
+Markdown. It came back a third time in review, and I was the one who tripped over it: my reviewer probe
+asserted the served document contains no `import type` and no `<script src`, and both fired. Neither was
+a defect. The document is 66 KB over 1774 lines, **293 of them doc-comment lines**, because
+`stripTypeScriptTypes` keeps comments — so the client's own paragraph explaining why a CDN is ruled out
+ships to the browser and is the only `<script src` in the bytes.
+
+The delivery's scan was right and mine was crude. Two things follow:
+
+- **A reviewer duplicating an executor's check is not evidence.** Once I made mine comment-aware it was
+  their test again. What a reviewer can claim that the executor cannot is the wire: my probe boots the
+  real server, fetches `/`, and asserts what a browser receives — no real `import` statement anywhere
+  (`/^\s*import[\s{]/m`), exactly one `new WebSocket(`, and the stripped script imported back through a
+  `data:` URL exporting live functions.
+- **The right assertion is about a statement, not a substring.** "No import" is `^\s*import`, not
+  `includes("import")`. Prose contains the word; only code starts a line with it.
+
+### Typechecked TypeScript reaches a browser with no build step
+
+`cockpit/view/client.ts` is strict TypeScript whose every import is `import type`; `cockpit/view.ts`
+blanks the types with Node's own `module.stripTypeScriptTypes` and inlines the result into the one
+document the server serves. Rejected: a hand-written stripper (worse than the runtime vendor's own), the
+TypeScript compiler API (a devDependency at runtime), and a string of untypechecked JavaScript inside a
+`.ts` file — which is the thing this exists to avoid.
+
+It is verified rather than asserted: the inlined text is imported back through a `data:` URL and compared
+against the module the tests drive. The cost is a declared Gap — the API is experimental, so every
+process prints one `ExperimentalWarning`, and `client.ts` is read from disk beside `view.ts`, so a
+compiled tree moved elsewhere rejects with `ENOENT`.
+
+### Vitest reads `@vitest-environment` out of the first docblock, prose or not
+
+Explaining in a file's own doc comment that jsdom is absent, and naming the pragma while doing it, **turns
+the pragma on** and the file cannot start. Same shape as `@ts-expect-error` counting only when it opens
+the comment: the tool reads the text, not the intent.
+
+### When a fixture has one instance, "the one the rule names" and "the first one" are the same value
+
+Task 6 planted `haltingGate` reading `gates[0]` instead of the Gate the halt names, and **every test
+still passed** — every fixture Mission had exactly one Gate. The plant is what found it; no amount of
+reading would have. The fix is a fixture with two Gates, one answered and one open. Generalised: a plant
+that stays green has either found a check that cannot fail or a fixture too small to tell two rules
+apart, and both are worth the same attention.
+
+### A view that accepts two decimal notations decides the separator from the text
+
+`48.5` is not R$ 485,00. Stripping `.` as a thousands separator before parsing did exactly that, and the
+pin against the engine's own `formatMoney`/`moneyFromDecimal` is what caught it. Which character is the
+decimal point is read off the string; it is never assumed. The reading also accepts `60,00` and
+`R$ 1.234,50`, because the spoken form here is PT-BR.
+
+### Three Gaps with one remedy is a task, not three caveats
+
+Task 6 declared that `xterm.js` is not installed, that `jsdom` is not installed so `attach` is executed
+by no test, and that the view offers two of the PRD's three human answers. All three are real — I
+verified the two absences and confirmed both packages install from this environment — and all three are
+gated on `package.json`, which the task was told not to touch. Fixing them inside it would have been the
+scope creep this flow exists to stop; leaving them as caveats would have scattered one decision across
+three Gap paragraphs nobody would collect. They became Task 10, with the reason written next to them.
+
+The general form: **when several declared Gaps share one remedy, the remedy is the unit of work.** Group
+them before deciding, or the same dependency gets argued three times and installed by whichever task
+happens to be least disciplined.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

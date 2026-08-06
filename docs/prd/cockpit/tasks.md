@@ -4,7 +4,7 @@ Derived from `techspec.md`. Read the PRD and the techspec first.
 
 ## Granularity
 
-**9 tasks** for 12 acceptance criteria. One is already delivered (`pty-agent-runner.ts`, ahead of
+**10 tasks** for 12 acceptance criteria. One is already delivered (`pty-agent-runner.ts`, ahead of
 this PRD being written), so eight remain.
 
 Justified: four are independent runtime modules with proofs that do not touch each other (Panes,
@@ -69,7 +69,7 @@ criterion did.
 
 ## Task 6 — The Cockpit view
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: the Cockpit drawing each Pane with `xterm.js`, per-Pane status and cost, the Mission bar with the Meter,
   and the two human answers: a Gate decision and a Cap authorisation.
 - **Touches**: `cockpit/view/**` and tests
@@ -112,3 +112,28 @@ criterion did.
   Briefing produces at least one real Delegation to a real process, with the Replay on disk. It also
   carries the two transports Task 7 deliberately did not write: the control plane's stdio framing and
   its mount on the Cockpit's port.
+
+## Task 10 — Emulator fidelity and a real DOM
+
+- **Status**: todo
+- **Goal**: the three things Task 6 could not reach because it was not allowed a dependency, plus the
+  human answer it was not asked for.
+- **Touches**: `package.json`, `cockpit/server.ts`, `cockpit/view/**`, and their tests
+- **Depends on**: 6
+- **Scope**, each item declared by Task 6 as a Gap and each verified by the reviewer as real:
+  1. `@xterm/xterm` as a dependency, served from a second route, replacing the emulator Task 6 wrote
+     by hand. What the hand-written one cannot do is written into its own module: no alternate
+     buffer (the `1049` mode a TUI switches into), no insert or delete line, no scroll region, no
+     reflow on resize, one column per code point, no mouse. A Zord CLI that runs as a TUI therefore
+     draws over the scrollback instead of into a buffer of its own, and most of them run as one.
+  2. `jsdom` as a dev dependency, so `attach` is executed by a test. Today nothing runs it: what a
+     click decides is a pure function with its own test, and that a click reaches the delegated
+     listener is unproven.
+  3. The Kill answer. The PRD names three human answers and Task 6 was asked for two. A Mission
+     stopped at its Cap whose human does not want to spend more currently has nothing to say.
+- **Verification**: a Pane running a TUI renders it; a click drives a Gate decision under a
+  real DOM; `kill-mission` from the view ends a Mission halted at its Cap.
+- **Why it is a task and not a caveat fixed in place**: all three need `package.json`, and two need
+  `cockpit/server.ts` — a route that does not exist and is Task 5's delivered code. Installing a
+  dependency inside a task that was told not to have one is the scope creep this flow exists to stop.
+  Both packages were confirmed installable from this environment before the task was written.

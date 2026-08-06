@@ -723,7 +723,14 @@ export function brl(cents: number): string {
  * separators are accepted for the same reason — a human pastes what the Meter showed them.
  */
 export function centsIn(typed: string): number | undefined {
-  const cleaned = typed.trim().replace(/^R\$\s*/u, "").replace(/\./gu, "").replace(/,/gu, ".");
+  const bare = typed.trim().replace(/^R\$\s*/u, "");
+  // **Which separator is the decimal point is decided by the text, never by stripping one first.** A
+  // comma present means PT-BR notation, so the dots are thousands and the comma is the point; a comma
+  // absent means the engine's own notation, where the dot *is* the point — and stripping dots first
+  // turned `48.5` into R$ 485,00. The pin against `moneyFromDecimal` is what caught that.
+  const cleaned = bare.includes(",")
+    ? bare.replace(/\./gu, "").replace(/,/gu, ".")
+    : bare;
   const matched = /^(\d+)(?:\.(\d{1,2}))?$/u.exec(cleaned);
   if (matched === null) {
     return undefined;
@@ -1069,17 +1076,15 @@ function capAs(cents: number | undefined): Money {
  * stay the browser's, so a human is never trapped inside a Pane.
  */
 export function keystrokesOf(key: string, ctrl: boolean, alt: boolean): string | undefined {
-  if (ctrl && !alt && key.length === 1) {
-    const letter = key.toLowerCase();
-    const code = letter.charCodeAt(0);
-    if (code >= 97 && code <= 122) {
-      // Ctrl+A..Z is 0x01..0x1a: Ctrl+C is the interrupt, Ctrl+D the end of input.
-      return String.fromCharCode(code - 96);
+  if (ctrl && key.length === 1) {
+    const control = controlByte(key);
+    if (control === undefined) {
+      return undefined;
     }
-    if (key === "[") {
-      return "\u001b";
-    }
-    return undefined;
+    // Alt is the meta prefix, so Ctrl+Alt+R is ESC then **Ctrl+R** — the control byte, not the letter.
+    // Sending ESC and `r` would deliver a different keystroke under the same name, which is the one
+    // thing a terminal must never do.
+    return alt ? `\u001b${control}` : control;
   }
 
   switch (key) {
@@ -1120,6 +1125,30 @@ export function keystrokesOf(key: string, ctrl: boolean, alt: boolean): string |
   }
   // One printable character, and nothing else: `key` is `"Shift"`, `"F5"`, `"Meta"` for the rest.
   return key.length === 1 ? key : undefined;
+}
+
+/**
+ * The control byte a key produces when Ctrl is held, or `undefined` when it produces none.
+ *
+ * `Ctrl+A`..`Ctrl+Z` are 0x01..0x1a — `Ctrl+C` the interrupt, `Ctrl+D` the end of input — and the five
+ * punctuation keys below carry the rest of the C0 range, which is where `Ctrl+[` being ESC comes from.
+ * Anything else with Ctrl held is a browser shortcut and stays the browser's.
+ */
+function controlByte(key: string): string | undefined {
+  const code = key.toLowerCase().charCodeAt(0);
+  if (code >= 97 && code <= 122) {
+    return String.fromCharCode(code - 96);
+  }
+  const punctuation: Readonly<Record<string, number>> = {
+    "[": 27,
+    "\\": 28,
+    "]": 29,
+    "^": 30,
+    _: 31,
+    " ": 0,
+  };
+  const byte = punctuation[key];
+  return byte === undefined ? undefined : String.fromCharCode(byte);
 }
 
 /* =================================================================================================

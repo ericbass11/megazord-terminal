@@ -13,11 +13,16 @@
  *   it must be there.
  *
  * **There is no DOM, and that is a Gap, not a choice.** `jsdom` is not installed in this repository —
- * `npm ls jsdom` is empty and `@vitest-environment jsdom` fails with `Cannot find package 'jsdom'` — and
- * `package.json` is outside this task's scope, so the environment cannot be added. Writing a DOM stub
- * instead was rejected on this repository's own rule: a fake with rules of its own is a second rule set
- * the tests would start passing because of, and a hand-written `closest` that disagrees with a browser's
- * is exactly the bug a DOM test exists to catch.
+ * `npm ls jsdom` is empty, and asking for the jsdom environment in a per-file docblock fails the whole
+ * file with `Cannot find package 'jsdom'` — and `package.json` is outside this task's scope, so the
+ * environment cannot be added. Writing a DOM stub instead was rejected on this repository's own rule: a
+ * fake with rules of its own is a second rule set the tests would start passing because of, and a
+ * hand-written `closest` that disagrees with a browser's is exactly the bug a DOM test exists to catch.
+ *
+ * (Naming that pragma in this docblock is itself a trap, and it cost a red run: **vitest reads the
+ * pragma out of the first docblock of a file, comment or not**, exactly as TypeScript honours
+ * `@ts-expect-error` only when the directive opens the comment. Mentioning it in prose here switched the
+ * environment on and the file could not start at all.)
  *
  * So `attach` is not executed, and what would have been proven by clicking is proven in three other
  * ways, none of which is a snapshot:
@@ -97,6 +102,7 @@ import {
   spentOn,
   stoppedAtCap,
   textOf,
+  type Action,
   type Cockpit,
 } from "./client";
 
@@ -138,8 +144,12 @@ function delegating(): Delegate {
     harnessSources: {
       catalogDefault: { cli: "claude", model: "opus", effort: "high", skills: [] },
     },
+    // Two Clauses, one required and one optional, so a Handoff that satisfies nothing breaks this
+    // Contract **twice** — a Refusal carries a list, and a test that pinned one violation would miss
+    // the second for ever.
     contract: contract([
       clause({ id: clauseId("clause-one"), description: "the grid renders", required: true }),
+      clause({ id: clauseId("clause-two"), description: "the Meter is drawn", required: false }),
     ]),
   };
 }
@@ -525,6 +535,46 @@ describe("criterion 6: a Gate halts the Mission in the Cockpit and a human answe
     });
   });
 
+  it("answers the Gate the halt names, not the first one on the record", () => {
+    // Found by plant: with one Gate in the fixture, reading `gates[0]` and reading the Gate the halt
+    // names are indistinguishable, so a view that ignored the halt passed every test. A Mission that
+    // has answered one Gate and raised another tells them apart.
+    let recorded = submit(EMPTY_REPLAY, opening("50.00"));
+    recorded = submit(recorded, delegating());
+    recorded = submit(recorded, {
+      kind: "raise-gate",
+      occurredAt: at(2),
+      gateId: GATE,
+      question: "The Contract is signed. Carry on?",
+    });
+    recorded = submit(recorded, {
+      kind: "decide-gate",
+      occurredAt: at(3),
+      gateId: GATE,
+      decision: { kind: "approved" },
+    });
+    const second = gateId("gate-ready-to-deliver");
+    recorded = submit(recorded, {
+      kind: "raise-gate",
+      occurredAt: at(4),
+      gateId: second,
+      question: "Ready to deliver?",
+    });
+
+    const cockpit = showing(recorded);
+    const state = stateIn(cockpit);
+    if (!isOpened(state)) {
+      throw new Error("this Mission is opened");
+    }
+    expect(state.gates.length).toBe(2);
+    expect(haltingGate(cockpit.state)?.id).toBe(second);
+
+    const html = renderAnswers(cockpit);
+    expect(html).toContain("Ready to deliver?");
+    expect(html).not.toContain("The Contract is signed. Carry on?");
+    expect(html).toContain(`value="${second}"`);
+  });
+
   it("stops offering the Gate once it has been answered", () => {
     const recorded = gateHalted();
     const answer = answerFor("approve-gate", { gateId: String(GATE) }, at(4));
@@ -883,10 +933,23 @@ describe("what a key means to a process", () => {
   });
 
   it("keeps a key it does not map, so a human is never trapped inside a Pane", () => {
-    for (const key of ["F5", "Shift", "Meta", "Control", "CapsLock"]) {
+    for (const key of ["F5", "Shift", "Meta", "Control", "CapsLock", "F12"]) {
       expect(keystrokesOf(key, false, false)).toBeUndefined();
+      expect(keystrokesOf(key, true, false)).toBeUndefined();
     }
-    expect(keystrokesOf("r", true, true)).toBeUndefined();
+    // Ctrl held over a key that carries no control byte is a browser shortcut, not a keystroke.
+    expect(keystrokesOf("1", true, false)).toBeUndefined();
+  });
+
+  it("prefixes the control byte with ESC when Alt is held too, rather than dropping the Ctrl", () => {
+    // Ctrl+Alt+R is ESC then Ctrl+R. Sending ESC and `r` would deliver Alt+R under another name.
+    expect(keystrokesOf("r", true, true)).toBe(`${ESC}\u0012`);
+    expect(keystrokesOf("r", false, true)).toBe(`${ESC}r`);
+  });
+
+  it("carries the punctuation keys that hold the rest of the C0 range", () => {
+    expect(keystrokesOf("[", true, false)).toBe(ESC);
+    expect(keystrokesOf(" ", true, false)).toBe("\u0000");
   });
 });
 
@@ -970,5 +1033,109 @@ describe("the markup a click reads agrees with what answerFor reads", () => {
   it("emits a pane-kill addressed to the Pane the control names", () => {
     const answer = answerFor("kill-pane", { paneId: "pane-7" }, at(9));
     expect(answer).toEqual({ kind: "sends", sent: { kind: "pane-kill", paneId: "pane-7" } });
+  });
+});
+
+/* -------------------------------------------------------------------------------------------------
+ * Type-level guarantees
+ *
+ * Each is falsified by breaking the **source of the guarantee** and confirming `tsc --noEmit
+ * --incremental false` reports `TS2578: Unused '@ts-expect-error' directive` — never by widening a
+ * helper in this file, which would prove only that the scaffolding is wired up. The two that cannot be
+ * phrased as a directive are annotations whose falsification fails the build instead; both say so.
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("the guarantees the compiler carries", () => {
+  it("refuses to read `sent` off an Answer nobody narrowed", () => {
+    const answer = answerFor("approve-gate", {}, at(0));
+    // @ts-expect-error the `unknown` member declares no `sent`, so every caller has to answer the fault
+    const read = () => answer.sent;
+    expect(typeof read).toBe("function");
+    // The runtime half: narrowing is what makes it readable.
+    expect(answer.kind === "sends" ? answer.sent.kind : "").toBe("submit");
+  });
+
+  it("refuses an action name that is not one of the four the Cockpit renders", () => {
+    // @ts-expect-error `Action` is the union of ACTIONS, not `string`: an unrendered action is not one
+    const action: Action = "drop-the-database";
+    expect(typeof action).toBe("string");
+    expect([...ACTIONS]).toContain("approve-gate");
+  });
+
+  it("refuses to resize a screen, because rows and cols are fixed when it is made", () => {
+    const screen = screenOf(4, 20, 10);
+    // @ts-expect-error `rows` is readonly: this terminal does not reflow, and the type is what says so
+    screen.rows = 40;
+    // @ts-expect-error `cols` is readonly for the same reason, and no rule anywhere changes it
+    screen.cols = 200;
+    expect(screen.rows).toBe(40);
+  });
+
+  it("refuses to swap a Cockpit's Pane list, although the fold appends to it", () => {
+    const cockpit = cockpitOf(4, 20, 10);
+    fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "x" } as ToCockpit);
+    expect(cockpit.panes.length).toBe(1);
+    // @ts-expect-error `panes` is a readonly reference: a Pane is added by the fold, never replaced
+    cockpit.panes = [];
+    // Readonly is a compile-time guarantee and nothing freezes this list, which is the point: the
+    // fold pushes onto it. What the type stops is a caller throwing the Panes away wholesale.
+    expect(cockpit.panes.length).toBe(0);
+  });
+
+  it("refuses to renumber a Pane, because its slot is assigned once when it is first heard from", () => {
+    const cockpit = cockpitOf(4, 20, 10);
+    fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "x" } as ToCockpit);
+    const pane = cockpit.panes[0]!;
+    // @ts-expect-error `ordinal` is readonly: the grid slot is the order the Pane was first heard in
+    pane.ordinal = 9;
+    // @ts-expect-error `paneId` is readonly: a Pane is not renamed, a different Pane is a different one
+    pane.paneId = "b";
+    expect(pane.ordinal).toBe(9);
+  });
+
+  it("refuses to draw a Meter that may not be there", () => {
+    const cockpit = showing(running());
+    // @ts-expect-error `renderMeter` takes a Meter: an unopened Mission has none, and none is not zero
+    renderMeter(cockpit.meter);
+    expect(cockpit.meter).toBeDefined();
+  });
+
+  it("refuses to fold a gesture, because the fold reads what the server said", () => {
+    const cockpit = cockpitOf(4, 20, 10);
+    // @ts-expect-error `pane-write` is a FromCockpit: it travels the other way and folds into nothing
+    fold(cockpit, { kind: "pane-write", paneId: "a", keystrokes: "x" });
+    expect(cockpit.panes).toEqual([]);
+  });
+
+  /**
+   * A guarantee no directive can phrase, so it is an annotation: `answerFor`'s `submit` carries a
+   * `MissionCommand` and not an object that merely looks like one. Falsifying it — widening `Submit`'s
+   * `command`, or building the Gate answer without the `DecideGate` annotation — fails the build with
+   * `TS2322` rather than reporting `TS2578`, which is the third kind of proof this repo records.
+   */
+  it("emits Commands the engine's own union accepts", () => {
+    const answer = answerFor("approve-gate", { gateId: String(GATE) }, at(0));
+    if (answer.kind !== "sends" || answer.sent.kind !== "submit") {
+      throw new Error("the Gate answer is a submit");
+    }
+    const asCommand: MissionCommand = answer.sent.command;
+    expect(asCommand.kind).toBe("decide-gate");
+
+    const cap = answerFor("authorise-cap", { amount: "30,00" }, at(0));
+    if (cap.kind !== "sends" || cap.sent.kind !== "submit") {
+      throw new Error("the Cap answer is a submit");
+    }
+    const asCap: MissionCommand = cap.sent.command;
+    expect(asCap.kind).toBe("authorise-cap");
+  });
+
+  /**
+   * The other annotation: `keystrokesOf` answers `string | undefined`, so a caller **cannot** forget
+   * that some keys stay the browser's. Falsified by narrowing the return type to `string`, which fails
+   * the build here with `TS2322` at the `undefined` half.
+   */
+  it("makes a caller handle the key it does not map", () => {
+    const mapped: string | undefined = keystrokesOf("F5", false, false);
+    expect(mapped).toBeUndefined();
   });
 });
