@@ -1509,6 +1509,53 @@ time; `wchan` is a heuristic against kernel internals; and reading the prompt ou
 parsing prose, which the techspec forbids. So a Zord waiting three minutes on a model reads as `idle`
 here, and that limit is written where a reader will find it.
 
+### A stale `tsconfig.tsbuildinfo` makes `tsc --noEmit` under-report
+
+`tsconfig.json` sets `"incremental": true`, and a falsification loop produced different error counts
+across identical runs because the build info file hid errors that were really there. Any `tsc` result
+offered as evidence — a falsification, a probe, a review check — is run with **`--incremental false`**.
+This is the same failure class this file already records twice about scans: a check that quietly
+under-reports is believed.
+
+### A re-fold on a path whose value was already folded is a check that can only pass
+
+Found by plant, not by reading: two normalisations downstream of `factIn`, which folds a subject on
+*every* entry path, so nothing could reach them unfolded. Ten plants went red and those two passed.
+The rule: when one function normalises on every entry path, a second normalisation downstream is
+unfalsifiable — delete it and say where the single fold lives. **Unless** the consumer is exported and
+can be handed a value that never went through it: `subjectsIn` takes a plain `CortexReading` a caller
+can build with no cast at all, so its fold is real and has a test that goes red without it. Both
+halves of that split belong in the code, or the next reader deletes the wrong one.
+
+### A store's answer may carry its own damage
+
+All-or-nothing is right for a value that **folds** — the Mission store refuses a whole Replay on a
+torn line, because a missing entry makes the folded state *wrong*. Report-and-continue is right for a
+**set**: a missing Fact makes the Cortex smaller, not wrong. Two conditions make that safe, and both
+are load-bearing: the report is in the **return value** (`read` answers `{ facts, unreadable }`, the
+same reason a Refusal is a return value in the engine), and a Cortex has **many writers**, so a torn
+line is not at the tail and refusing the file would take the Workspace's shared memory down for every
+Zord until a human ran `truncate`.
+
+**When many processes append to one file, the writer needs a line-start guard.** One writer per file
+can rely on the reader refusing a torn tail; many writers cannot, because the tail stops being the
+tail. The guard has a **control test** that performs the unguarded append and asserts the Fact is
+lost — otherwise "the guard guards" is a check that can only pass.
+
+### The Cortex is the fifth site of the authorship Gap, and it answers differently on purpose
+
+`CapAuthorised`, `GateDecided`, `MissionKilled` and a `Step` record no author because they record a
+**human's** decision and nothing in the repo names a human. A Fact records a **Zord's** discovery, and
+a Zord *is* named — `ZordId` is one of the engine's five ids. So `zordId` is required on a Fact and
+that is not the engine contradicting itself. What is still missing is the human and the Core: a
+Surface must not invent `zordId: "human"`, because an unfalsifiable claim sitting in the Workspace's
+shared memory forever is worse than not being able to write one.
+
+### A test fixture that spells a timestamp out digit by digit runs off the end of an hour
+
+A clock that increments minutes produced `11:80` and 23 tests failed for a reason with nothing to do
+with the subject. Derive Instants from a fixed base.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

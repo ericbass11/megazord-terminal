@@ -151,7 +151,8 @@ The fact memory shared by every Zord of a Workspace, which outlives the session.
 _Avoid_: memory, cache, history, context
 
 **Fact**:
-One Cortex entry, attributed to who wrote it and to the Mission it came from.
+One Cortex entry: one thing worth remembering, filed under a subject, attributed to the Zord that
+wrote it and to the Mission it came from.
 _Avoid_: note, log, learning, memory
 
 ## Visible execution

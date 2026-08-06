@@ -41,7 +41,7 @@ that proves the product exists.
 
 ## Task 4 — Cortex on disk
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: `memory_write` / `memory_read` against a Workspace-scoped file, a Fact carrying who wrote
   it and the Mission it came from.
 - **Touches**: `runtime/cortex-store.ts` and test
