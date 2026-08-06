@@ -11,8 +11,12 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    // Only the engine and its tooling are tested here. The Next.js site in app/, components/ and
-    // lib/ is verified by `npm run build` and must never be pulled into a Vitest run.
-    include: ["engine/**/*.test.ts", "tools/**/*.test.ts"],
+    // Only the engine, the runtime adapters and the tooling are tested here. The Next.js site in
+    // app/, components/ and lib/ is verified by `npm run build` and must never be pulled into a
+    // Vitest run.
+    include: ["engine/**/*.test.ts", "runtime/**/*.test.ts", "tools/**/*.test.ts"],
+    // runtime/ spawns real processes: a spawn, a timeout and a kill escalation are all wall-clock
+    // work, and 5s is not enough for the suite's slowest case.
+    testTimeout: 30_000,
   },
 });

@@ -1166,13 +1166,189 @@ Same lesson as `codeOf`'s regular-expression tracking, and now recorded twice: w
 directions, spend the effort on the direction that hides a violation. Over-reporting gets argued about;
 under-reporting gets believed.
 
+### A dependency is a location decision, and `runtime/` is where the world is allowed in
+
+The real `AgentRunner` needs `node-pty`. The engine has none, and that is not a preference — it is a test:
+`mission.e2e.test.ts` reads every non-test source under `engine/` and asserts every `from "…"` specifier is
+a relative path. Putting a pty adapter in `engine/adapters/` would have failed it, and rightly: the engine
+would stop being typecheckable, testable and readable on a machine without a native toolchain.
+
+So there is a third top-level source directory. **`runtime/` may import `engine/`; `engine/` must never
+import `runtime/`**, and both halves are pinned rather than remembered — the engine's own test forbids the
+non-relative import, and `runtime/pty-agent-runner.test.ts` asserts no specifier under `engine/` contains
+`runtime` and that this module's only non-relative imports are `node-pty` plus two `@engine/` paths. The
+general form: **when a new capability arrives with a dependency, the question is not how to hide the
+dependency but which directory is allowed to have it.**
+
+`vitest.config.mts` gained `runtime/**` in `test.include` and a `testTimeout` of 30s, because a spawn, a
+timeout and a kill escalation are wall-clock work and 5s is not enough.
+
+### Killing the leader is not killing the child
+
+`IPty.kill(signal)` is `process.kill(this.pid, signal)` — one pid. Every grandchild the CLI spawned is
+somebody else's problem, and the reason it *looks* fine is incidental: killing the session leader hangs up
+the terminal, and an ordinary child dies of `SIGHUP`. A child that traps it does not. Proven with a
+`bash -lc` script whose grandchild does `trap '' HUP; exec sleep 300` (an **ignored** signal survives an
+`exec`, which is what makes the `sleep` itself immune): after the leader-only kill both grandchildren were
+alive with `ppid 1`, still running, still spending.
+
+So `terminate` signals the **process group** — `process.kill(-child.pid, …)`, which works because `node-pty`
+puts the child in a new session, so its pid is also its process group id — and escalates `SIGTERM` →
+`SIGKILL` after a grace period. Both halves have a test that can fail: the group kill has a **control** that
+performs the leader-only kill and asserts the grandchild survives it, and the escalation has a grandchild
+trapping `HUP` **and** `TERM`, so only the `SIGKILL` can end it. Without those two, "the kill kills" is a
+check that can only pass.
+
+Two mechanics worth not rediscovering: `$$` inside `( … )` is still the *parent* shell's pid, so a subshell
+reports itself with `$BASHPID`; and liveness is read from `/proc/<pid>/stat`, not from `process.kill(pid, 0)`,
+because a zombie answers signal 0 and a test that counted zombies as survivors would call a working kill
+broken on any host whose init is slow to reap.
+
+### A timeout that waits for the process it is killing is not a timeout
+
+`run` rejects **on the timer** and destroys the process tree in the background. Settling only after the
+child is confirmed dead would make the caller's answer depend on the child — the exact thing the timeout
+exists to stop — and a process ignoring `SIGTERM`, or wedged in an uninterruptible read, would hang the
+Surface for as long as it liked. The escalation timer is `unref`'d so a pending `SIGKILL` never holds a test
+run or a CLI session open, and it is cleared the moment the child is gone.
+
+The consequence is that "the process is dead" is not something the caller can await, and it should not be:
+the evidence is `/proc`, and the test polls it.
+
+### A pty is not a pipe, and an adapter that pretends otherwise is guessing
+
+Three properties of a pseudoterminal, all left visible on purpose, and each one a decision:
+
+- **One stream.** stdout and stderr arrive interleaved. `AgentReport` has one `output`, so this matches the
+  port; what it costs is that nothing downstream can tell which half a line came from.
+- **The terminal echoes what is written to it.** An instruction delivered through the terminal appears in
+  `output` before the CLI has said anything — the test asserts it appears exactly **twice** when `cat` is the
+  CLI. Stripping the echo means guessing which prefix of the output was ours.
+- **`\r\n`, ANSI escapes and cursor moves are in the output.** Nothing trims, normalises or strips them, for
+  the reason `resolveHarness` already gives: `"claude "` is either a typo or a different CLI and both deserve
+  to be seen. Turning what a Zord wrote into a Handoff is a judgement about text and belongs to the Surface.
+
+And the mechanic: a terminal has no EOF, so an instruction is written followed by `\r` (which `ICRNL` turns
+into the newline that completes the line) and then EOT (`\u0004`, written as an escape because no editor
+shows the literal control character), which is what the line discipline turns into
+end-of-input. Without the EOT a CLI reading stdin never stops reading and the run dies of its timeout —
+which is how the delivery test is written, as a **pair**: the same script under `"arguments"` must hear
+nothing and under `"terminal"` must hear the instruction, or neither test says anything about delivery.
+
+### A runner fails by rejecting, because `AgentReport` is a claim that a Zord delivered
+
+Decided against widening the resolved value, and the first reason is the load-bearing one: a Surface awaits
+`run` and then submits what came back as Commands. Hand it a crash log in `output` and it builds a Handoff
+out of a stack trace; `decide` judges that against the Contract and answers a Refusal, and the Replay says
+forever that the Zord delivered and broke its Contract. It did not deliver. The other two reasons: widening
+`AgentReport` means editing `engine/`, where every existing implementation would carry a field it cannot
+fill; and `fakeAgentRunner` already rejects, so two failure channels for one port means a Surface that
+handles the fake and drops a real one.
+
+`AgentRunFailure` keeps `timeout` and `killed` apart although both end with a dead process, because they are
+facts about different parties — `timeout` is this runner giving up, `killed` is somebody else ending the
+process while we waited — and collapsing them would tell a human to raise a timeout that was never reached.
+The error carries the output collected so far and **no cost**: a failed run may well have spent money and
+this module has no way to know how much, so a zero there would be the always-zero field again.
+
+### An overflow fails rather than truncating, for the same reason a scan must not under-report
+
+`maxOutputBytes` (default 4 MiB) exists because unbounded capture from a runaway CLI is an OOM. Exceeding it
+**rejects**. A truncated `output` handed back as an `AgentReport` is a delivery missing its end and nothing
+downstream can tell — the same shape as the fenced-block hole in `proseLinesOf`: over-reporting gets argued
+about, under-reporting gets believed.
+
+### Cost is a declared zero, and that is the honest answer here
+
+Every run answers `ZERO_MONEY`, meaning **"no price source exists"** and not "this run was free". The
+process is the party being billed and is not trusted to report a cost; `node-pty` reports an exit code and a
+signal and nothing about tokens; and there is no price list anywhere in this repository. What is left is
+wall-clock time, and turning seconds into cents would be inventing money — a plausible number a Meter would
+total and a Cap would halt a Mission against, which is precisely the class of value `money.ts` refuses
+fractions and negatives to keep out.
+
+There is deliberately **no `priceOf` hook** waiting for the day a CLI reports its usage: an option only a
+test would ever pass is the always-zero field wearing a function type. A `@ts-expect-error` probe pins its
+absence, so whoever adds pricing deletes the directive and states the decision. This is the fifth site of
+the "nothing in this repo names the thing" family, after the four authorship Gaps.
+
+### Cast-tolerance at a port is about what the adapter *substitutes*, not only what it dereferences
+
+`spawn("")` in `node-pty` silently falls back to `sh`. So a `Harness` whose `cli` was lost to a cast would
+run a **different program under the Harness's name** and the Replay would say it ran the one the `Delegated`
+fact records. That is worse than a throw, and it is why `cli` is read as `unknown` and refused before
+anything is forked — a fourth entry for the grades this file already lists (copy, dereference, compute):
+**substitute a default for a missing value and the lie is silent and permanent.**
+
+The instruction is checked in the same place and only under `"terminal"` delivery, so `not-spawned` stays
+true — nothing has been forked yet. A **blank** instruction is allowed through, because "nothing to say" is
+something a caller can mean and it is not an adapter's judgement; a non-string is not.
+
+The options themselves are **not** read as `unknown`, and the line is worth stating: an `AgentRun` crosses
+the port from a Surface that may have deserialised it, while `PtyAgentRunnerOptions` is written in code by
+whoever builds the runner. Different threat models, different standards.
+
+### Nothing is inherited silently, and the two variables you did not list
+
+`cwd`, `env`, `timeoutMs` and `argumentsFor` are all **required**, and `env` is a complete map this module
+never merges with `process.env`: a CLI that inherits the whole parent environment inherits every credential
+the parent holds, and a Zord is a process running text somebody else wrote. `inheritedEnv(names)` is how a
+variable is passed through — the point being that the list is written down at the call site — and an unset
+name is left out rather than passed as `""`, because an empty `HOME` is a different question from an absent
+one.
+
+`argumentsFor` is required rather than defaulted to `[]` for a Replay reason, not a taste one: the Harness
+carries `model`, `effort` and `skills`, there is no flag spelling true of `claude`, `codex` and `gemini` at
+once, and a default would drop those three on the floor and run a Zord under a bundle the `Delegated` fact
+says it ran with.
+
+Two variables reach the child that no caller listed, both set by `node-pty` and both named in the module
+doc so the list is complete: `TERM` (from the `term` option) and `PWD` (set to `cwd`).
+
+### A probe with no collateral can also mean "the type is the whole enforcement"
+
+Falsification tally for the pty adapter: 8 probes, 7 reported `TS2578` (2 with collateral inside the source
+— optional `timeoutMs` produced `TS2322` at the `setTimeout`, optional `argumentsFor` produced `TS2722` at
+the call), and the eighth is an annotation (`const asPort: AgentRunner = bashRunner()`) whose falsification
+is 8 errors starting with `TS2322`, because assignability cannot be phrased as a directive.
+
+The four with no collateral add a case to the list this file already keeps. `cwd` and `env` being required
+break nothing inside the source when made optional — `node-pty` would happily default them to
+`process.cwd()` and `process.env`, which is exactly the failure the requiredness exists to prevent. So the
+answer is neither "it guards an absence" nor "a runtime half carries the load": **the type is the whole
+enforcement, and the thing it enforces is that a caller cannot stay silent.** Worth distinguishing, because
+it is the one variety where adding a runtime check would be the wrong instinct.
+
+### A test whose premise is "and then it resolves" has a premise
+
+The first green run had one failure, and it took 15 seconds to arrive: a test asserting that nothing is
+written to the terminal ran `bash -lc 'cat; echo …'` and reasoned that it would resolve "because the
+terminal closed when bash exited". Bash does not exit while `cat` is reading — `cat` had no input and no
+EOT, so the run died of its timeout and the assertion never ran.
+
+Same family as "a test helper's default parameter can swallow the case under test", from the other end:
+that one was a fixture quietly supplying a valid value, this one was a **sentence in a comment standing in
+for a mechanism**. The fix is the pair described above, where each half fails if the other's premise is
+wrong. When a test's reasoning contains "because", check the because.
+
+### Declared Gap: node-pty reports a missing binary as exit code 1
+
+`node-pty` forks a helper that `execvp`s the file, so a CLI that is not installed arrives as
+`{ reason: "exit", exitCode: 1 }` with `execvp(3) failed.: No such file or directory` on the terminal — and
+a bad `cwd` arrives the same way with `chdir(2) failed.`. This adapter cannot tell either apart from the CLI
+itself exiting 1, and matching the helper's wording would be a heuristic against a dependency's internals.
+Pinned by a test rather than guessed at, so the day it changes, something says so.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without
   `"type": "module"`, Vite's loader warns on every run. `.mts` fixes it without making the whole
   root package ESM, which would put the Next config files at risk.
-- `test.include` is scoped to `engine/**` and `tools/**`. The site is verified by `npm run build`
-  and is never pulled into a Vitest run.
+- `test.include` is scoped to `engine/**`, `runtime/**` and `tools/**`. The site is verified by
+  `npm run build` and is never pulled into a Vitest run.
+- `testTimeout` is 30s, raised from the default 5s because `runtime/` spawns real processes and a
+  timeout plus a kill escalation is wall-clock work. It is a ceiling, not a budget: the whole
+  `runtime/` suite runs in about 9 seconds.
 - `vitest.config.mts` is listed explicitly in `tsconfig.json` `include`, because `**/*.ts` does not
   match `.mts`.
 - **`expect(promise).rejects` must be awaited**, or Vitest warns and will fail in its next major. The
@@ -1188,6 +1364,14 @@ under-reporting gets believed.
 `npm run lint` does not work: `next lint` is deprecated in Next 15 and the repo has no ESLint
 config, so it drops into an interactive prompt and exits 1. It predates this flow. The repo
 therefore has **no working linter**, which matters whenever a review step wants one.
+
+**`npm test` has two failing tests, and they are about a document.** `docs/prd/cockpit/prd.md` was
+committed after Task 10 built the adherence checks and has never been through them: it trips criterion 8
+(26 prose violations — `agent`, `terminal`, `directory`, `team`, `output`, `grid`, `session`, `budget`,
+`prompt`) and criterion 9 (the folder has no `techspec.md` and no `tasks.md` yet). Both failures are
+`tools/`, both name the same folder, and neither involves `engine/` or `runtime/`. Confirmed pre-existing
+by stashing: at `85636c0` the suite is 472 tests with the same 2 red. Do not read a red `npm test` as
+your own until you have checked that it is more than these two.
 
 ## Current state of the repo
 
@@ -1206,8 +1390,13 @@ therefore has **no working linter**, which matters whenever a review step wants 
   `engine/mission.e2e.test.ts` at the root, which imports only `@engine/index`. 406 tests. It has **no
   dependency of any kind** — every import inside `engine/` is a relative path, and `mission.e2e.test.ts`
   asserts that.
+- The **runtime** is `runtime/pty-agent-runner.ts` — the real `AgentRunner`, spawning a CLI through
+  `node-pty` — with `runtime/pty-agent-runner.test.ts` beside it (39 tests, all of them real spawns, no
+  mock of the pty anywhere). It is the **only** place in the repo with a runtime dependency and the only
+  place that touches the operating system. `runtime/` may import `engine/`; `engine/` must never import
+  `runtime/`, and both directions are asserted by tests.
 - The **adherence checks** are `tools/glossary-check.ts` (the scanning library), with
   `tools/glossary-check.test.ts` for criterion 8 and `tools/prd-structure.test.ts` for criteria 9 and 10.
-  They are part of `npm test`, which is 458 tests. `tools/` uses `node:fs` and is the only place in the
-  repo that reads the tree.
+  They are part of `npm test`, which is 511 tests. `tools/` uses `node:fs` and is the only place in the
+  repo that reads the tree — `runtime/` reads it too, but only to assert its own boundary.
 - The **decisions** are `docs/adr/0001..0007`, one per entry of the techspec's "Decisions worth an ADR".

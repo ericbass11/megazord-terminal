@@ -713,6 +713,9 @@ export const PROSE_EXEMPTIONS: readonly Exemption[] = [
   { word: "product", because: "'what the product promises', and `docs/PRODUTO.md`" },
 
   // General English that happens to collide with a term some other concept avoids.
+  { word: "session", because: "CONTEXT.md's own definition of the Cortex says it outlives the session" },
+  { word: "budget", because: "'eat the whole budget' is effort, not a Mission's Cap" },
+  { word: "prompt", because: "a model prompt and its contract; a Briefing is what opens a Mission" },
   { word: "cast", because: "a TypeScript type assertion — the reason every runtime guard exists" },
   { word: "memory", because: "'state lives in memory' is RAM; the Cortex is the shared fact memory" },
   { word: "library", because: "an npm dependency, and the engine's having none" },
