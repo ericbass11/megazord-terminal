@@ -595,9 +595,11 @@ describe("the boundary", () => {
     const imported = [...here.matchAll(/from "([^"]+)"/g)].map(([, specifier]) => specifier);
 
     expect(imported).toContain("node-pty");
+    // One line, because runtime/ names the engine's public surface and nothing inside it. The two
+    // deep specifiers this pinned before (@engine/domain/money, @engine/ports/agent-runner) were
+    // the boundary violation CLAUDE.md now forbids, not a shape worth preserving.
     expect(imported.filter((specifier) => specifier?.startsWith("@engine/")).sort()).toEqual([
-      "@engine/domain/money",
-      "@engine/ports/agent-runner",
+      "@engine/index",
     ]);
   });
 

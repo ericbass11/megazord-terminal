@@ -1451,6 +1451,64 @@ in the tree and the next patch in the loop is applied on top of it — silently,
 assertion about uniqueness is what fails, not the revert. Copy the pristine file aside before falsifying a
 new module, and check the restore with `diff` rather than trusting the command.
 
+### `runtime/` imports the engine's public surface, never its insides
+
+`engine/index.ts` states that reaching into `engine/domain/*` from outside the module is not part of
+the Contract, and two of the first three `runtime/` modules did it anyway (`@engine/domain/money`,
+`@engine/domain/harness`) while a third obeyed (`@engine/index`). Settled in review: **every import
+from `runtime/` or `cockpit/` names `@engine/index`.** Two live precedents pointing opposite ways is
+how the next five tasks each pick one at random. `mission-store.test.ts` pins its import line, so the
+pin is updated with the code rather than deleted.
+
+### A detector fails loudly about its input and reports absence only about the world
+
+From provider detection: a `PATH` that is not a string **refuses**; a `PATH` entry the file system
+rejects contributes nothing. Answering "no providers installed" because the caller passed nonsense
+sends a human to install what they already have — the under-reporting failure this file records twice
+about scans, in a new place.
+
+Two mechanics from the same task, both proven by plant:
+
+- **`access(X_OK)` alone reports a directory as an installed program.** A POSIX directory carries the
+  execute bit to mean "searchable", for root as well, so detection is `stat().isFile()` **and**
+  `access(X_OK)`. And root does not defeat the mode check: a 0644 file is `EACCES` for uid 0.
+- **Make the platform an input and its rules become provable off it.** `candidatesFor` carries every
+  Windows `PATHEXT` rule and is tested on Linux; only the file-system half stays a Gap. A module that
+  read `process.platform` could be tested on one platform and would call the rest untestable.
+
+### Killing a process group has its own version of every pid trap
+
+From the Pane manager, on top of what the pty runner already recorded:
+
+- **`process.kill(-pgid, 0)` counts a zombie as a live group member** — the group-shaped form of the
+  trap the runner recorded for a single pid. Measured after the whole group had been SIGKILLed,
+  because the leader was briefly an unreaped zombie.
+- **Never `process.kill(-pid)` without checking `pid === pgid` first.** If `node-pty` stopped calling
+  `setsid`, the negative pid would signal the Cockpit's *own* group, and a SIGKILL would take the app
+  and every Pane with it. One comparison turns a catastrophe into a degraded kill, and the premise is
+  read back from `/proc` and tested rather than assumed.
+- **Do not `unref` a timer a pending promise depends on.** Once the pty leader exits, its fd no longer
+  holds the event loop, so an `unref`'d poll would let the process exit with `kill` unresolved and the
+  grandchild alive. The unbounded silence timer is `unref`'d; the bounded poll is not.
+- **A rejected promise cached by `??=` makes the failure permanent.** Clear the cache on rejection: a
+  pending SIGKILL can still land, and a stuck Pane is exactly what a human is trying to end.
+- **Two test files that deliberately leave processes need two spellings.** Vitest runs files in
+  parallel and one file asserts no `sleep 300` exists on the host; the other uses `sleep 297`. Without
+  that, one file's live holdout fails the other's cleanliness check, in a test that names no cause.
+
+### A Pane's status is what a pty can actually report
+
+`working` means bytes arrived within `idleAfterMs`; `idle` means they did not; `starting` means neither
+can be said yet. `idleAfterMs` is **required**, because the window is half of what `idle` means and a
+default would be the module guessing invisibly inside a status a human reads.
+
+"Waiting for you" is **not** modelled, and the search for it is recorded so nobody repeats it:
+`/proc` state cannot tell blocked-on-terminal from blocked-on-socket (both `S`); the foreground process
+group cannot either, because a CLI polling stdin alongside the network is in the foreground the whole
+time; `wchan` is a heuristic against kernel internals; and reading the prompt out of the output is
+parsing prose, which the techspec forbids. So a Zord waiting three minutes on a model reads as `idle`
+here, and that limit is written where a reader will find it.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

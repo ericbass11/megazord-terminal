@@ -31,7 +31,7 @@ that proves the product exists.
 
 ## Task 3 — Pane manager
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: the live process table: spawn, stream what the process wrote, deliver keystrokes, kill the
   tree, report status.
 - **Touches**: `runtime/pane-manager.ts` and test

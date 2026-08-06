@@ -40,7 +40,7 @@ import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { EFFORTS, type Harness } from "@engine/domain/harness";
+import { EFFORTS, type Harness } from "@engine/index";
 
 import {
   InvalidProviderCatalogError,

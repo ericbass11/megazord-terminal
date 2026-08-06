@@ -89,8 +89,7 @@
 
 import { spawn as spawnPty, type IPty } from "node-pty";
 
-import { ZERO_MONEY } from "@engine/domain/money";
-import type { AgentReport, AgentRun, AgentRunner } from "@engine/ports/agent-runner";
+import { ZERO_MONEY, type AgentReport, type AgentRun, type AgentRunner } from "@engine/index";
 
 /** How the instruction reaches the CLI. */
 export type InstructionDelivery =

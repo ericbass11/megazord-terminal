@@ -96,7 +96,7 @@
 import { access, constants, stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 
-import { harness, type Effort, type Harness } from "@engine/domain/harness";
+import { harness, type Effort, type Harness } from "@engine/index";
 
 /* -------------------------------------------------------------------------------------------------
  * The Catalog
