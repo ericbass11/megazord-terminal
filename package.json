@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "next": "^15.5.22",
+    "node-pty": "^1.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
