@@ -1339,6 +1339,118 @@ a bad `cwd` arrives the same way with `chdir(2) failed.`. This adapter cannot te
 itself exiting 1, and matching the helper's wording would be a heuristic against a dependency's internals.
 Pinned by a test rather than guessed at, so the day it changes, something says so.
 
+### A store persists, it does not judge — so `load` casts, and says so
+
+`runtime/mission-store.ts` writes a Replay as JSONL and reads it back, and its **only** import from the
+engine is an `import type`: the compiled module requires `node:fs/promises` and `node:path` and nothing
+else, which its test asserts off the emitted JavaScript. So no line of engine code runs in the store, and
+that is a decision rather than a side effect — a store that could call a value constructor would be a
+second place the rules live, and it would be the one a Surface reads the Mission through, so where they
+disagreed the store would win.
+
+Re-validating a loaded entry through `handoff()`, `contract()` or `moneyFromCents` was rejected on one
+structural ground and two supporting ones:
+
+- **A Replay legitimately contains malformed Commands.** `decide` refuses a `submit-handoff` whose Handoff
+  was lost to a cast, and `submit` records that Refusal *with its Command*. A loader that re-validated
+  would refuse to load exactly the entries the engine goes out of its way to keep — and a Replay that
+  cannot be read is a Replay that cannot be shown to a human, which is the whole of what it is for.
+- **A brand has no runtime representation**, so there is nothing in a file to check one against. What a
+  constructor re-checks is the *value's* invariants, and the engine already re-checks the ones it computes
+  with (`amountOf`, `stepsOf`, `decide`).
+- **The file is as trustworthy as the source tree beside it**: whoever can edit `.megazord/missions/x.jsonl`
+  can edit `engine/domain/mission.ts`. This is not a hostile boundary; it is this process's own record.
+
+What the store *does* check is what **it** computes with, which is `CLAUDE.md`'s cast-tolerance rule applied
+to a module with two jobs: the MissionId, because it becomes a path (`join(root, "")` is the directory
+itself — the pty adapter's *substituted default*, silent and permanent), and the discriminated **skeleton**
+of an entry, because that is what makes the value readable at all (`stepsOf` joins `refusal.violations`, so
+a Refusal without them would make the audit surface throw). It stops at the Decision's own shape and never
+looks inside a Command or an Event.
+
+### A prefix a caller will append to is a file destroyed one entry later
+
+A corrupt line — the app killed between the `write` and the newline — makes `load` **reject**, naming the
+1-based line and the byte offset where it starts, and return nothing. Skipping the line is the failure this
+file already records twice about scans (under-reporting gets believed), but the interesting rejection is the
+*reasonable* alternative: return the good prefix and let the caller carry on. It breaks one entry later —
+an append after a torn tail buries that tail in the middle of the file, where no future `load` can pass it,
+and every entry after it is unreachable. So the offset is the remedy (`truncate -s <at>`), and refusing is
+what forces somebody to use it.
+
+The same argument is why there is **no repair function and no torn-tail guard in `append`**: a torn line
+means the writer died mid-write, so no live writer sits behind one, and a new writer cannot build a coherent
+entry without having loaded the Replay first — `submit` needs it to decide against. The hole that argument
+leaves is a caller appending an entry it did not get from `submit`, and that is a caller writing fiction
+into the record; a store cannot make that safe.
+
+### "Appended" means fsync'd, and the file's name is a second fsync
+
+`append` resolves once the bytes are on the medium: one `write` to an `O_APPEND` descriptor, `fsync` on the
+file, then `fsync` on the **containing directory** so a newly created file's *name* is durable too and not
+only its contents. The directory `fsync` failing is ignored rather than raised — it is not permitted on
+every platform, and refusing to store a Mission would be a worse answer than a weaker durability claim,
+which the module doc states rather than implies.
+
+Two mechanics that came with it: the entry is serialised **before** the file is opened, so an entry that
+cannot be JSON never creates one; and appends are serialised in call order by a promise chain, because the
+Replay's order *is* the record and a caller that fires two without an `await` must still get them in the
+order it asked. Two processes appending to one Mission is not something the module can order, and one writer
+per Mission is the assumption a Cockpit meets by construction.
+
+### The separate-process proof needs a compile step, because bare Node cannot load `engine/`
+
+Criterion 8 says reopen from disk, and reopening the same in-memory object proves nothing about a file. The
+obvious child process — `node --experimental-strip-types` over the store — cannot fold what it loads:
+`engine/`'s relative specifiers carry no extension, which ESM refuses, so importing `engine/index.ts`
+fails on `./domain/ids`. So `mission-store.test.ts` spawns `tsc` with `--module commonjs` into a temporary
+directory (about two seconds, once per run) and then runs a plain `node` reader over the emitted tree, which
+calls `load`, folds it with `stateOf` and reads it with `stepsOf`, `refusedIn` and `eventsIn`. That last part
+is the half worth copying: it proves the loaded value is still a **Replay** and not merely equal bytes.
+
+Falsified by making `append` open with `"w"` instead of `"a"`: 8 tests red, the criterion-8 one among them.
+The other two plants — a corrupt line skipped instead of reported (14 red) and a MissionId not encoded into
+its file name (5 red) — are what keep those policies from being claims.
+
+### The file name is the MissionId, percent-encoded, and the encoding is the security
+
+`encodeURIComponent(id) + ".jsonl"`, because a MissionId is any non-blank string and a file name is not:
+`../../etc/passwd` becomes `..%2F..%2Fetc%2Fpasswd.jsonl` and stays inside the Missions directory, and
+`list()` gets the id back byte for byte. `list()` also requires a name to be the **canonical** encoding of
+what it decodes to — otherwise `a b.jsonl` beside `a%20b.jsonl` would let two files claim one Mission — and
+it refuses a `.jsonl` it cannot name rather than ignoring it, for the same reason `load` refuses a corrupt
+line. What is *not* ours is ignored: anything without the suffix, and any directory.
+
+Two declared Gaps, both about the file system rather than the encoding: a **case-insensitive volume** folds
+two MissionIds differing only in case into one file (the encoding is injective, the volume is not, and hex
+would make the directory unreadable to the human "one file per Mission" is for); and a MissionId past the
+platform's name limit arrives as `ENAMETOOLONG` from the OS, at the only layer that knows the limit.
+
+### A Replay with a Gate in it carries two halts
+
+`raise-gate` **halts the Mission**, so a Replay that contains a Gate contains a `mission-halted` fact with
+`gate-open` before the one with `cap-reached`. Expecting `["cap-reached"]` failed loudly on the first run;
+the dangerous version is a test that asserts `halts[0]`. It is the same shape as "a Refusal carries a list,
+so pinning one violation is wrong twice" — assert the whole list, and read the fixture rather than assuming
+it.
+
+### A `readonly` probe over a frozen list must sit in a function nobody calls
+
+`loaded.push(entry)` under a `@ts-expect-error` compiles-errors as intended *and* throws `TypeError` at
+runtime, because `load` freezes what it hands out — so the test fails for the runtime reason and says
+nothing about the type. The fix is the pty adapter's pattern: put the probe in an arrow function that is
+only ever checked with `typeof`, and assert the freeze separately as the runtime half. This extends the
+rule this file already carries about mutation probes ("a frozen object throws even for a same-value
+write") to the case where the *probe itself* is the thing that trips over the freeze.
+
+### `git checkout` cannot revert a file git has never seen
+
+Smaller than the entry above it and it cost two wasted falsification runs: `git checkout runtime/mission-store.ts`
+on an **untracked** file exits 1 with `pathspec … did not match any file(s) known to git`, so the plant stays
+in the tree and the next patch in the loop is applied on top of it — silently, because the loop's own
+assertion about uniqueness is what fails, not the revert. Copy the pristine file aside before falsifying a
+new module, and check the restore with `diff` rather than trusting the command.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without
@@ -1365,13 +1477,14 @@ Pinned by a test rather than guessed at, so the day it changes, something says s
 config, so it drops into an interactive prompt and exits 1. It predates this flow. The repo
 therefore has **no working linter**, which matters whenever a review step wants one.
 
-**`npm test` has two failing tests, and they are about a document.** `docs/prd/cockpit/prd.md` was
-committed after Task 10 built the adherence checks and has never been through them: it trips criterion 8
-(26 prose violations — `agent`, `terminal`, `directory`, `team`, `output`, `grid`, `session`, `budget`,
-`prompt`) and criterion 9 (the folder has no `techspec.md` and no `tasks.md` yet). Both failures are
-`tools/`, both name the same folder, and neither involves `engine/` or `runtime/`. Confirmed pre-existing
-by stashing: at `85636c0` the suite is 472 tests with the same 2 red. Do not read a red `npm test` as
-your own until you have checked that it is more than these two.
+**~~`npm test` has two failing tests, and they are about a document.~~ Fixed, and kept here as the
+record.** `docs/prd/cockpit/prd.md` was committed at `d6272c6` without going through the adherence checks
+and tripped criterion 8 (26 prose violations — `agent`, `terminal`, `directory`, `team`, `output`, `grid`,
+`session`, `budget`, `prompt`) and criterion 9 (the folder had no `techspec.md` and no `tasks.md`).
+Commit `77e04ec` reworded the PRD and added both documents, so the suite has been green since. **Read a red
+`npm test` as your own from here on** — there is no longer a pre-existing failure to hide behind. The
+lesson stands: the flow's own rule is that every artifact passes the checks, and the artifact describing the
+next product was written without them.
 
 ## Current state of the repo
 
@@ -1392,11 +1505,14 @@ your own until you have checked that it is more than these two.
   asserts that.
 - The **runtime** is `runtime/pty-agent-runner.ts` — the real `AgentRunner`, spawning a CLI through
   `node-pty` — with `runtime/pty-agent-runner.test.ts` beside it (39 tests, all of them real spawns, no
-  mock of the pty anywhere). It is the **only** place in the repo with a runtime dependency and the only
-  place that touches the operating system. `runtime/` may import `engine/`; `engine/` must never import
-  `runtime/`, and both directions are asserted by tests.
+  mock of the pty anywhere), plus `runtime/mission-store.ts` — the Replay as JSONL under
+  `.megazord/missions/`, one file per Mission — with `runtime/mission-store.test.ts` (54 tests, real disk,
+  and criterion 8 proven by loading in a `node` process spawned over a compiled tree). It is the **only**
+  place in the repo with a runtime dependency and the only place that touches the operating system.
+  `runtime/` may import `engine/`; `engine/` must never import `runtime/`, and both directions are asserted
+  by tests. The store goes further and imports the engine **only as types**, so no engine code runs in it.
 - The **adherence checks** are `tools/glossary-check.ts` (the scanning library), with
   `tools/glossary-check.test.ts` for criterion 8 and `tools/prd-structure.test.ts` for criteria 9 and 10.
-  They are part of `npm test`, which is 511 tests. `tools/` uses `node:fs` and is the only place in the
+  They are part of `npm test`, which is 565 tests. `tools/` uses `node:fs` and is the only place in the
   repo that reads the tree — `runtime/` reads it too, but only to assert its own boundary.
 - The **decisions** are `docs/adr/0001..0007`, one per entry of the techspec's "Decisions worth an ADR".

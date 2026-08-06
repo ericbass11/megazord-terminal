@@ -14,7 +14,7 @@ that proves the product exists.
 
 ## Task 1 — Mission store on disk
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: the Replay persisted as JSONL under `.megazord/`, appended per entry, loaded back whole.
 - **Touches**: `runtime/mission-store.ts` and test
 - **Depends on**: none
