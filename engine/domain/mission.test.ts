@@ -707,6 +707,33 @@ describe("delegating a Slice of a Mission", () => {
   });
 
   /**
+   * Found in review. `core` is the one required field of `open-mission` that a rule *dereferences*
+   * (`holds` reads `capabilities`), which is the third grade of cast-tolerance `CLAUDE.md` records, and
+   * `Core` is a structural type with no brand — so a Surface that deserialised a payload and cast it can
+   * open a Mission whose Core has no capability set at all. That used to reach `undefined.some` and throw
+   * out of `decide`, which promises never to throw. A Core nobody can read holds nothing.
+   */
+  it("refuses instead of throwing when the Core cannot be read at all", () => {
+    const unreadable: readonly OpenMissionFields[] = [
+      opening({ core: {} as unknown as OpenMissionFields["core"] }),
+      opening({ core: { capabilities: "delegate" } as unknown as OpenMissionFields["core"] }),
+      opening({ core: { capabilities: [null] } as unknown as OpenMissionFields["core"] }),
+      opening({ core: null as unknown as OpenMissionFields["core"] }),
+    ];
+
+    unreadable.forEach((fields) => {
+      const led = openMission(fields);
+
+      expect(() => decide(led, delegateCommand)).not.toThrow();
+
+      const refusal = refusalOf(decide(led, delegateCommand));
+
+      expect(refusal.reason).toBe("missing-capability");
+      expect(refusal.violations.join(" ")).toMatch(/holds no "delegate" capability/);
+    });
+  });
+
+  /**
    * The type level is not enough here either: `catalogDefault` is a complete `Harness` by type, and
    * `cli: ""` satisfies that type while naming no CLI. `resolveHarness` throws on it, and `decide` is
    * contractually non-throwing — so the throw becomes the Refusal it should have been.

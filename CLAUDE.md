@@ -105,6 +105,23 @@ PRD slugs are kebab-case English. The folder name is what `/executar-task <folde
 
 Appended by each task, so the next one does not rediscover them.
 
+**How to read this ledger**, because it is now the longest part of this file. It is **chronological**, one
+or more entries per task, and it is not a summary: every entry exists because something was got wrong or
+nearly got wrong once. Two conventions make that survivable:
+
+- **A rule that was superseded is corrected in place and says so**, rather than being deleted — the wrong
+  version is part of the evidence. There is one so far: "A `?: never` on a discriminated union is not the
+  exclusion it looks like" corrects the earlier claim about excess-property checking, and "Grow the avoided
+  word forwards" supersedes "add the inflected form to the `_Avoid_` list". Read the later entry.
+- **The load-bearing ones, if you read nothing else**: do not add a field or an Event variant no rule
+  updates; falsify every type-level proof at the guarantee, never at the test; `decide` and `evolve` never
+  throw, so a value that arrives through a cast is read as `unknown` and answered truthfully; a fact
+  carries what a rule computed, and a total belongs to the fold; and a check that can only pass proves
+  nothing.
+
+Keeping the ledger here rather than in a document of its own is deliberate: a rule nobody loads is a rule
+nobody applies. If it outgrows that, the split is a decision for the war-room, not for a task.
+
 ### Glossary checks are about naming, not banned words
 
 An `_Avoid_` entry in `CONTEXT.md` means **"do not use this word to name this concept"** — it is
@@ -910,9 +927,9 @@ RAM), `limit` (the glossary defines the **Cap** itself as "the spending limit of
 Criterion 10's check (in `tools/prd-structure.test.ts`) blanks comments, string literals and
 regular-expression literals first, via `codeOf`. Both reasons are load-bearing:
 
-- **All 28 mentions of `any` in `engine/` are prose** — "the `any[]` that `Array.isArray` narrows an
-  `unknown` to", "beyond any Cap a Mission could have been opened with". A raw scan fails on 28 correct
-  lines and gets switched off the same afternoon.
+- **Every mention of `any` in `engine/` is prose** — 29 of them at the time of the review — "the `any[]`
+  that `Array.isArray` narrows an `unknown` to", "beyond any Cap a Mission could have been opened with". A
+  raw scan fails on all 29 correct lines and gets switched off the same afternoon.
 - **A doc comment that mentions `@ts-expect-error` is not a directive.** TypeScript honours it only when
   the directive **opens** the comment, so `` `TS2578: Unused '@ts-expect-error' directive` `` mid-sentence
   is not a suppression — nine of those exist in `engine/`, and the regex mirrors what the compiler
@@ -1096,6 +1113,58 @@ with `git checkout docs/prd/mission-engine/prd.md`, also reverted the two reword
 just made to that file — the plant and the fix were in one working-tree change and `git checkout` does not
 know which is which. Plant into a file you have not edited, or remove the plant the way you added it
 (delete the appended line), and check `git diff --stat` afterwards rather than trusting the revert.
+
+### A structural type is not a constructor, so `Core` is a boundary and not a guarantee
+
+Found in review, and it is the one place the engine's own reasoning was wrong rather than incomplete.
+`mission.ts` said it did not re-check the Core invariant "because a Core is only constructible through
+`core()`" — and `Core` is `{ readonly capabilities: readonly CoreCapability[] }`, a structural type with no
+brand, so `{ capabilities: [] }` **is** a Core and never met `assertNoExecution`. A Surface that deserialises
+an `open-mission` payload and casts it therefore leads a Mission with a Core the type system would have
+refused, and `decide` accepts its Delegations. Proven from `@engine/index` with a typechecked probe.
+
+Two halves, and only one of them was a defect:
+
+- **The throw was.** `holds` dereferenced `core.capabilities`, so a Core that arrived as `{}` reached
+  `undefined.some` and threw out of `decide`, which promises never to throw. `core` is the one required field
+  of `open-mission` a rule reaches *into* — the third grade of cast-tolerance this file records — so it is now
+  read as `unknown`: a Core nobody can read holds nothing, and the Command is refused `missing-capability`.
+- **The unchecked invariant is not**, and it is left as a **finding**: re-checking in `decide` needs a Refusal
+  reason this PRD's union does not carry, and inventing one in a review is the scope creep this file forbids.
+  The durable fix is to brand `Core` so `core()` is the only way in — which changes the public surface, so it
+  belongs to whoever owns that decision. What changed here is that the comment now states the boundary
+  truthfully instead of claiming a guarantee.
+
+General form: **"only constructible through X" is only true of a branded type.** Every other value object here
+earns the claim (`Money`, `Briefing`, `Slice`, `Instant`, the five ids); `Harness`, `Contract`, `Handoff` and
+`Gate` do not, which is exactly why `decide` re-reads them where it computes with them.
+
+### A reading is part of the non-throwing contract, not an afterthought
+
+`decide` was hardened to refuse a `submit-handoff` whose Handoff was lost to a cast — and `stepsOf`, reading
+that same recorded Refusal back, threw `TypeError` on `command.handoff.delegationId`. The Refusal was handled
+perfectly and the audit surface was what finally broke, which is the worst possible place for it: a Replay
+that cannot be read is a Replay that cannot be shown to a human, and it is the only reason the Replay exists.
+
+So the rule that governs `decide` and `evolve` governs every reading over a recorded Command as well —
+`stepsOf`, `refusedIn`, `meterOf`, `revisionsIn`. A Replay records **what somebody intended**, including
+intentions the domain refused *because* they were malformed, so a reading is by definition handed values no
+rule validated. Anything it dereferences is read as `unknown` first.
+
+### A check that under-reports is worse than one that over-reports, and a fence proves it
+
+QA's caveat 13, closed in review. `proseLinesOf` dropped fenced lines **before** spans were found, so the line
+before a fence became adjacent to the line after it: two unmatched backticks on either side of a fence paired
+*across* it and blanked the prose in between. A planted `squad` between them was silently not reported — the
+adherence check quietly saying a tree is clean, which is the one failure that makes every green run
+meaningless. Markdown does the opposite, because a fence ends the paragraph.
+
+The fix is one line of shape rather than logic: a fenced line is **emptied, not dropped**, so it *is* the blank
+line the span search already bounds at. Falsified by restoring the drop, which turns the new test red.
+
+Same lesson as `codeOf`'s regular-expression tracking, and now recorded twice: when a scan can err in two
+directions, spend the effort on the direction that hides a violation. Over-reporting gets argued about;
+under-reporting gets believed.
 
 ### Vitest boundaries
 

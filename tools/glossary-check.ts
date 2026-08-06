@@ -452,6 +452,11 @@ export type ProseLine = {
  *   avoid; this is the same reasoning `codeOf` records for regular-expression literals.
  * - **A span never crosses a blank line.** A blank line ends a paragraph, so it ends any span an author
  *   left open — without this, one stray tick could swallow the rest of a document.
+ *
+ * A fence ends a paragraph too, which is why `proseLinesOf` hands this function a document where every
+ * fenced line has been emptied rather than removed: an emptied fence *is* the blank line that bounds the
+ * search, so two unmatched runs on either side of a fence stay literal instead of pairing across it. See
+ * `proseLinesOf` for what that hole cost before it was closed.
  */
 function spansBlanked(text: string): string {
   const characters = text.split("");
@@ -511,29 +516,44 @@ function spansBlanked(text: string): string {
  * required rather than convenient: "The reading is `stepsOf`, not `project`" — the second span is there
  * *because* `project` is avoided, and a scan that read it would fail the document that explains the rule.
  *
- * Fences are found line by line, because a fence is a line; spans are found over the kept lines joined
+ * Fences are found line by line, because a fence is a line; spans are found over the document joined
  * back together, because a span is not — see `spansBlanked`.
+ *
+ * **A fenced line is emptied, not dropped.** Found in review, and it is the second half of the wrapped-span
+ * hole rather than a new one: dropping the fenced lines before the spans were found made the line before a
+ * fence and the line after it adjacent, so two unmatched runs on either side of a fence with no blank line
+ * between them paired *across* it and blanked the prose in between. Markdown does the opposite — a fence
+ * ends the paragraph, so both ticks stay literal — and the error direction was the worse one: a real
+ * violation between the two ticks went unreported, which is a check quietly lying about a clean tree.
+ * Emptying the line keeps it out of the scan while leaving the paragraph bound `spansBlanked` needs, and
+ * the line numbers still come from the document, not from the kept lines.
  */
 export function proseLinesOf(markdown: string): readonly ProseLine[] {
-  const kept: ProseLine[] = [];
+  /** One entry per line of the document, `undefined` where a fence or fenced content sits. */
+  const lines: (string | undefined)[] = [];
   let fenced = false;
 
-  markdown.split("\n").forEach((raw, index) => {
+  markdown.split("\n").forEach((raw) => {
     if (/^\s*(?:```|~~~)/.test(raw)) {
       fenced = !fenced;
+      lines.push(undefined);
       return;
     }
-    if (fenced) {
-      return;
-    }
-    kept.push({ line: index + 1, text: raw });
+    lines.push(fenced ? undefined : raw);
   });
 
-  const blanked = spansBlanked(kept.map((prose) => prose.text).join("\n")).split("\n");
-  return kept.map((prose, index) => ({
-    line: prose.line,
-    text: (blanked[index] ?? prose.text).replace(/\]\([^)]*\)/g, "] "),
-  }));
+  const blanked = spansBlanked(lines.map((text) => text ?? "").join("\n")).split("\n");
+  const kept: ProseLine[] = [];
+  lines.forEach((text, index) => {
+    if (text === undefined) {
+      return;
+    }
+    kept.push({
+      line: index + 1,
+      text: (blanked[index] ?? text).replace(/\]\([^)]*\)/g, "] "),
+    });
+  });
+  return kept;
 }
 
 /* -------------------------------------------------------------------------------------------------

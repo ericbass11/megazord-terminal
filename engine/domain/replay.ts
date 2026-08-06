@@ -84,6 +84,7 @@
 import { decide, evolve, exhausted, UNOPENED_MISSION, type Decision, type Mission } from "./mission";
 import { formatMoney } from "./money";
 import type { MissionEvent } from "./events";
+import type { Handoff } from "./handoff";
 import type { MissionCommand } from "./commands";
 
 /* -------------------------------------------------------------------------------------------------
@@ -305,7 +306,7 @@ function asked(command: MissionCommand): string {
         `as Delegation "${command.delegationId}"`
       );
     case "submit-handoff":
-      return `answering Delegation "${command.handoff.delegationId}" with a Handoff`;
+      return `answering ${delegationAnsweredBy(command.handoff)} with a Handoff`;
     case "accrue-cost":
       return (
         `accruing ${formatMoney(command.cost)} against Delegation "${command.delegationId}"`
@@ -376,6 +377,33 @@ function added(event: MissionEvent): string {
       exhausted(event);
       return "and something happened this engine does not recognise";
   }
+}
+
+/**
+ * Which Delegation a `submit-handoff` says it answers, without trusting that it says anything.
+ *
+ * The one place a reading *dereferences* a Command's field, so it is the one place a reading could throw
+ * — and precisely on the Command `decide` goes out of its way to refuse rather than throw on: a
+ * `submit-handoff` whose Handoff was lost to a cast or a truncated payload is refused
+ * `illegal-transition` ("this one carries none"), that Refusal is recorded in the Replay by `submit`, and
+ * reading it back must not be what finally throws. A Replay that cannot be read is a Replay that cannot
+ * be shown to a human, which is the whole of what it is for.
+ *
+ * Same shape as `amountOf`, `saidOf` and `decisionOf`: read as `unknown`, answer truthfully. The
+ * condition stays inline in the `if`, because TypeScript does not narrow through an aliased compound
+ * condition that uses `in`.
+ */
+function delegationAnsweredBy(claimed: Handoff): string {
+  const value: unknown = claimed;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "delegationId" in value &&
+    typeof value.delegationId === "string"
+  ) {
+    return `Delegation "${value.delegationId}"`;
+  }
+  return "a Delegation this Command does not name";
 }
 
 /** `1 Clause`, `2 Clauses`, `no Gap` — a count a human reads, without a bare zero. */

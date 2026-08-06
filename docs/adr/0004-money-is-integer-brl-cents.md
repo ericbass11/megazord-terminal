@@ -9,7 +9,9 @@
 Every amount in the engine is a `Money`: a branded `number` holding whole BRL cents, defined in
 `engine/domain/money.ts`. `moneyFromCents` refuses a fraction, a negative, a non-finite value and
 anything past `Number.MAX_SAFE_INTEGER`, where addition would start losing cents. Reais arrive as text
-through `moneyFromDecimal("12,34")`; a float has no way in. There is `addMoney` and `compareMoney`, and
+through `moneyFromDecimal("12.34")` — a machine-readable form, so the separator is a full stop and
+`"12,34"` is refused rather than guessed at; the comma belongs to display, in `formatMoney`. A float has
+no way in. There is `addMoney` and `compareMoney`, and
 deliberately no subtraction and no division — nothing in this domain un-spends money, and an operation
 nobody needs is an operation somebody will misuse.
 

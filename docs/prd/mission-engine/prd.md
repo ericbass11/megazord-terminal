@@ -44,8 +44,10 @@ in later PRDs.
    and cost, in order, sufficient to reconstruct the final state.
 9. **AgentRunner port + fake adapter** — the boundary where a real CLI would live, with a
    deterministic fake so the domain is testable with no CLI installed.
-10. **Adherence checks** — a test fails when a term listed under `_Avoid_` in `CONTEXT.md`
-    appears in `engine/` or in `docs/prd/`; a test fails when a PRD folder lacks `prd.md`,
+10. **Adherence checks** — a test fails when a term listed under `_Avoid_` in `CONTEXT.md` is used to
+    name a domain concept: an exported symbol name in `engine/domain/`, or a word in `docs/prd/` and
+    `docs/adr/` prose outside fenced code. Narrowed from "appears in `engine/`" during Task 1's review,
+    for the reason acceptance criterion 8 records. And a test fails when a PRD folder lacks `prd.md`,
     `techspec.md` or `tasks.md`.
 11. **ADRs** for the decisions that pass the three-part test.
 

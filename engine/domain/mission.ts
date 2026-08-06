@@ -270,8 +270,18 @@ type OpenedFields = {
    *
    * Reused from `capability.ts`, where both halves of its invariant live: the parameter type of
    * `core()` refuses an `ExecutionCapability` and `assertNoExecution` refuses one that was forced
-   * through a cast. This file does not re-check it, because `decide` and `evolve` never throw and a
-   * Core is only constructible through `core()`.
+   * through a cast.
+   *
+   * **This file does not re-check the invariant, and that is a boundary rather than a guarantee.**
+   * `Core` is a structural type with no brand, so `{ capabilities: [] }` satisfies it without ever
+   * going through `core()`, and a Core deserialised by a Surface and cast into an `open-mission`
+   * Command therefore enters the aggregate unchecked — a Mission can be led by a Core the type
+   * system would have refused. Re-checking here is not available at the price `decide` pays for
+   * everything else: `assertNoExecution` throws, `decide` never does, and refusing the Command
+   * would need a Refusal reason this PRD's union does not carry. So the rule stands where it is
+   * built, a Surface builds a Core with `core()`, and the alternative — branding `Core` so the
+   * constructor is the only way in — is recorded as a finding of the review rather than decided
+   * here. What this file does guarantee is that reading the set never *throws*: see `holds`.
    */
   readonly core: Core;
   readonly openedAt: Instant;
@@ -1380,12 +1390,28 @@ const DELEGATE_CAPABILITY: OrchestrationCapabilityName = "delegate";
  * Whether a Core holds a capability, decided by name.
  *
  * The brand on a Capability is phantom, so the name is the only thing that survives to runtime — the
- * same reason `assertNoExecution` matches on names. This does not re-check the Core invariant: a Core
- * is only constructible through `core()`, which already refused every executing capability, and
- * `decide` never throws.
+ * same reason `assertNoExecution` matches on names. This does not re-check the Core invariant, for the
+ * reason recorded on `OpenedFields.core`; what it does is refuse to throw while reading it.
+ *
+ * **It reads the set as `unknown` first.** This is the third grade of cast-tolerance `CLAUDE.md`
+ * records — the value is *dereferenced*, not copied — and `core` is the one required field of
+ * `open-mission` that a rule reaches into. A Surface that deserialised a payload and cast it would
+ * otherwise reach `undefined.some` here and throw where `decide` promised not to, so a Core nobody can
+ * read holds nothing, and the Command is refused `missing-capability` with the violation that already
+ * exists. `decide` refusing is the truthful answer: a Core whose permissions cannot be read cannot be
+ * shown to have the one it needs.
  */
 function holds(held: Core, capability: OrchestrationCapabilityName): boolean {
-  return held.capabilities.some((granted) => granted.name === capability);
+  const granted: unknown = held?.capabilities;
+  if (!Array.isArray(granted)) {
+    return false;
+  }
+  // Re-typed away from the `any[]` that `Array.isArray` narrows an `unknown` to.
+  const capabilities: readonly unknown[] = granted;
+  return capabilities.some(
+    (each) =>
+      typeof each === "object" && each !== null && "name" in each && each.name === capability,
+  );
 }
 
 /** A Harness resolved from a Command's sources, or the reasons it cannot run. */

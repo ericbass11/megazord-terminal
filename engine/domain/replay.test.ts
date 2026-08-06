@@ -610,6 +610,31 @@ describe("a Step says in one line what happened", () => {
     );
   });
 
+  /**
+   * Found in review. `decide` deliberately refuses a `submit-handoff` whose Handoff was lost to a cast or
+   * a truncated payload rather than throwing on it — and `submit` records that Refusal, so reading the
+   * Replay back is the last place allowed to throw. It used to: `asked` dereferenced
+   * `command.handoff.delegationId`, so the audit reading of a Refusal `decide` had handled correctly threw
+   * `TypeError`. A Replay that cannot be read cannot be shown to a human, which is all it is for.
+   */
+  it("reads back a refused Handoff that carried none, instead of throwing", () => {
+    const handoffless = JSON.parse(
+      '{"kind":"submit-handoff","occurredAt":"2026-08-06T10:00:00.000Z"}',
+    ) as MissionCommand;
+    const recording = submit(recorded(THE_RUN.slice(0, 2)), handoffless);
+
+    expect(() => stepsOf(recording)).not.toThrow();
+
+    const refused = refusedIn(stepsOf(recording));
+
+    expect(refused).toHaveLength(1);
+    expect((refused[0] as Step).summary).toBe(
+      `answering a Delegation this Command does not name with a Handoff was refused ` +
+        `(illegal-transition): a Handoff is what a submit-handoff Command submits, and this one ` +
+        `carries none`,
+    );
+  });
+
   it("says why a Mission was killed, without saying it twice", () => {
     const killed = steps([
       ...THE_RUN.slice(0, 3),

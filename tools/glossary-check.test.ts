@@ -511,6 +511,32 @@ describe("PRD prose (criterion 8)", () => {
     expect(violations[0].line).toBe(3);
   });
 
+  /**
+   * QA's caveat 13, closed in review. A fence ends a paragraph exactly as a blank line does, so the two
+   * unmatched runs around one must stay literal. They did not: fenced lines were dropped *before* spans
+   * were found, which made the line before a fence adjacent to the line after it, so the ticks paired
+   * across the fence and blanked the prose in between — under-reporting, which is the failure this module
+   * says is the worse of the two.
+   */
+  it("does not let a span pair across a fence, so a real word between two ticks is still read", () => {
+    const fence = "```";
+    const document = [
+      "A ` tick, then a fence with no blank line around it:",
+      `${fence}ts`,
+      "const x = 1;",
+      fence,
+      "A squad here, and another ` tick.",
+    ].join("\n");
+
+    const violations = proseViolations(GLOSSARY, planted(document, "docs/prd/x/prd.md"));
+
+    expect(wordsFlagged(violations)).toEqual(["squad"]);
+    expect(violations[0].line).toBe(5);
+    // The fenced lines are still out of the scan, and the prose lines keep their own numbers.
+    expect(proseLinesOf(document).map((prose) => prose.line)).toEqual([1, 5]);
+    expect(proseLinesOf(document)[0].text).toContain("fence with no blank line");
+  });
+
   it("keeps CONTEXT.md out of scope, which is the only reason a clean run is possible", () => {
     expect(prdDocuments().map((document) => document.file)).not.toContain("CONTEXT.md");
     expect(prdDocuments().map((document) => document.file)).toContain("docs/prd/mission-engine/prd.md");

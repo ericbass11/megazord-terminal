@@ -67,7 +67,7 @@ engine/
     fake-agent-runner.ts  deterministic, scripted, no I/O
   index.ts          public surface of the module
 tools/
-  glossary-check.ts  reads CONTEXT.md, scans engine/ and docs/prd/
+  glossary-check.ts  reads CONTEXT.md, scans engine/domain names and docs/prd + docs/adr prose
 ```
 
 Tests live beside their subject as `*.test.ts`. Path alias `@engine/*` → `engine/*`, added to
@@ -192,7 +192,7 @@ ADR.
 | 5  | `meter.test.ts`: accrual crossing the Cap halts; next command refused `cap-reached` |
 | 6  | `gate.test.ts`: blocked until decided; proceed, revise and kill paths, kill routed as its own Command |
 | 7  | `replay.test.ts`: fold equality over a log with a Refusal, a Gate decision, a Cap halt and an authorisation; `refusedIn(stepsOf(...))` for the refusals |
-| 8  | `tools/glossary-check.test.ts` over `engine/` and `docs/prd/` |
+| 8  | `tools/glossary-check.test.ts`: exported names in `engine/domain/`, prose in `docs/prd/` and `docs/adr/` |
 | 9  | `tools/prd-structure.test.ts` over `docs/prd/*/` |
 | 10 | `tsc --noEmit` on the engine, plus a grep-based test for `any` and stray `@ts-expect-error` |
 | 11 | `/executar-review` checks `CONTEXT.md` and the ADRs against what was built |
