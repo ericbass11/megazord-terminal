@@ -3,6 +3,19 @@
 Validation of `docs/prd/mission-engine/` against `prd.md`, `techspec.md`, `tasks.md`, `CONTEXT.md`,
 `CLAUDE.md` and `docs/adr/0001..0007`. Judged by running the proofs, never by reading the diff.
 
+**Current verdict: reproved — Round 2, one open bug (BUG-3).** Both rounds are kept below, oldest
+first. Round 1 is the record of the delivery as Task 10 left it; Round 2 re-validates after
+`/executar-bugfix` and is the verdict that stands.
+
+| Round | Tree | Verdict | Open bugs |
+| --- | --- | --- | --- |
+| 1 | `1f2d709` (Task 10) | reproved | BUG-1, BUG-2 |
+| 2 | `c4f2f5f` (bugfix) | reproved | BUG-3 — BUG-1 and BUG-2 verified fixed |
+
+---
+
+# Round 1 — the delivery as Task 10 left it
+
 - **Verdict**: **reproved**
 - **Date**: 2026-08-06
 - **Tree**: `1f2d709` (Task 10), working tree clean before and after every probe below
@@ -471,3 +484,393 @@ second look, and here four of the five broke their own source as well.
 
 Run `/executar-bugfix` for the two entries in `bugs.md`, then `/executar-qa` again. Nothing advances
 with an open bug, and automation does not replace the human conference that follows it.
+
+---
+
+# Round 2 — after `/executar-bugfix`
+
+- **Verdict**: **reproved**
+- **Date**: 2026-08-06
+- **Tree**: `c4f2f5f` (bugfix), working tree clean before and after every probe below
+- **Open bugs**: 1 — BUG-3 in `bugs.md`. BUG-1 and BUG-2 are fixed, and both fixes were reproduced
+  here rather than accepted from the handoff.
+
+## Verdict in one paragraph
+
+Both bugs are fixed, and both are fixed at the cause: the old matcher is green over the exact
+documents that carried `agents` and `auditing`, and the strengthened one reports both at the exact
+lines BUG-1 named; reinstating the exemption the bugfix deleted makes the new real-tree test fail
+naming it, while the mechanical test it replaced passes with the dead entry sitting in the table. All
+thirteen acceptance criteria still hold, three type-level guarantees were falsified again with the
+same `TS2578`, and the strengthened scan produces **no false positive anywhere in the tree** — 135
+exported names clean, every document clean, and all 57 hits that exist only because of inflection
+fall under words that were already exempted for the right reason. Nothing was weakened to pass:
+`CONTEXT.md` and `engine/` are byte-identical to Task 10, no test was removed or loosened, and the
+exemption table shrank in substance even while its count stayed at 33. The delivery is reproved on
+one thing, and it is precisely the risk this round existed to hunt: the fix widened the **avoided**
+side of the name scan into every inflection and left the **term** exemption beside it un-widened, so
+the plural of a glossary term is now a violation. `export type Deliveries` is reported for `delivery`
+(`_Avoid_` under **Handoff**) although `Delivery` is a defined term whose plural is correct code, and
+the name scan has no exemption table in which to excuse it. It is latent — nothing in the tree
+triggers it — and one word wide, `Delivery` being the only term that also sits in an `_Avoid_` list.
+See BUG-3.
+
+## BUG-1 — fixed at the cause, reproduced three ways
+
+**1. The old matcher against the pre-fix documents.** The strongest form of the proof, because it
+holds the documents fixed and moves only the code. A worktree at `1f2d709` supplied the documents as
+the delivery shipped them; the matcher transcribed from that same commit was run against them, and
+then the current one:
+
+```
+pre-fix documents: 10
+
+[A] OLD matcher over PRE-FIX documents (what the delivery shipped) -> 0 violations
+[B] FIXED matcher over the SAME PRE-FIX documents -> 2 violations:
+    docs/prd/mission-engine/prd.md:109 "agent" (_Avoid_ under Zord) :: real agents behave. Mitigated …
+    docs/prd/mission-engine/prd.md:113 "audit" (_Avoid_ under Replay) :: … designed for auditing needs …
+```
+
+Same files, same glossary, same exemption table as the delivery shipped: green before, two hits
+after, at the two lines BUG-1 named, with the two `_Avoid_` owners BUG-1 named. That is the cause, not
+the symptom — the symptom was the two sentences, and they were reworded second.
+
+**2. Planted in the real tree, in inflected forms only.** A plant richer than the bugfix's, so more
+than one class of inflection is exercised — plural, past, present participle and the consonant-plus-`y`
+form:
+
+```
+$ printf 'The maestros dispatched subtasks to workers inside squads, and the histories were audited by bots.\n' >> docs/prd/mission-engine/prd.md
+$ printf 'export type SubagentWorkers = readonly string[];\n' >> engine/domain/mission.ts
+$ npx vitest run tools/glossary-check.test.ts
+ × passes clean over engine/domain
+ × passes clean over docs/prd
+engine/domain/mission.ts:1564 uses "worker" (_Avoid_ under Zord) in: SubagentWorkers
+engine/domain/mission.ts:1564 uses "subagent" (_Avoid_ under Zord) in: SubagentWorkers
+prd.md:154 "maestro" (Core)   "dispatch" (Delegation)   "subtask" (Slice)   "bot" (Zord)
+prd.md:154 "worker" (Zord)    "squad" (Combination)     "history" (Cortex)  "history" (Replay)
+prd.md:154 "audit" (Replay)
+ Tests  2 failed | 33 passed (35)
+```
+
+Nine prose hits, every one of them from an inflected form, and `history` correctly twice because two
+terms avoid it. The name scan caught `SubagentWorkers` for the exact word **and** for the plural, so
+the widening reaches both scans as the docstring claims. Reverted by `git checkout`, tree verified
+clean, suite green again at 35.
+
+**3. The one thing that must not have happened.** The rewording is real and is the declared policy:
+`prd.md:109` now reads "how real Zords behave" and `prd.md:113` "designed to answer questions no one
+has asked yet". Exactly two lines of `prd.md` changed and neither is an acceptance criterion —
+`git diff 1f2d709 c4f2f5f -- docs/prd/mission-engine/prd.md` touches only open risks 1 and 3.
+
+## BUG-2 — fixed at the cause, and the corrected test falsified
+
+The falsification the bug asks for, performed here rather than read: the exemption the bugfix deleted
+was put back into `PROSE_EXEMPTIONS` verbatim, and the suite run.
+
+```
+$ npx vitest run tools/glossary-check.test.ts
+ × carries at least one real line of the documents it governs, every entry
+AssertionError: these exemptions excuse nothing in docs/prd or docs/adr: delete them, or say in
+`because` what prose they are cover for and why that prose is not written yet:
+expected [ 'output' ] to deeply equal []
+ Tests  1 failed | 34 passed (35)
+```
+
+Two things in that red, and the second is what makes it a fix rather than a patch. The new test names
+the dead entry, and **the mechanical test it replaced is among the 34 that passed** — with the dead
+entry sitting in the table. That is the defect BUG-2 described, demonstrated from both sides in one
+run. Reverted; tree verified clean.
+
+The third new test — the one that falsifies the new test by deriving a genuinely carrier-less avoided
+word from the tree — was re-read and holds: `uncarried` is non-empty by a wide margin (129 avoided
+entries, 33 of them live in the documents), so it cannot pass vacuously.
+
+## No false positive: the check does not reprove correct code
+
+This was the real risk of BUG-1's fix, and it was measured rather than reasoned about. Reproduced
+independently through the module's own exported readers, not through its tests:
+
+```
+terms: 39   avoided entries: 129   exemptions: 33
+exported names in engine/domain: 135
+naming violations: 0
+documents scanned: 12
+prose violations WITH the table: 0
+total hits with NO exemptions: 316   distinct words: 33
+exemptions with ZERO carriers: none
+hits under words NOT exempted: none
+```
+
+The last two lines are the whole answer. Every one of the 316 hits the empty table exposes falls
+under one of the 33 exempted words, and every one of the 33 has at least one carrier. There is no hit
+the table does not cover and no entry the tree does not need.
+
+**The three names the brief asks about, and how they are actually clean.** `validateHandoff` is a
+real exported name and passes. `Catalog` and `catalogDefault` are **not** exported names of
+`engine/domain/` at all — `Catalog` is a glossary term with no type yet and `catalogDefault` is a
+field of `resolveHarness`'s argument, which no scan reads — so the guarantee about them can only be
+tested by planting, which is what the delivery's own tests do and what I repeated:
+
+```
+CLEAN  export const Catalog = 1;
+CLEAN  export const catalogDefault = 1;
+CLEAN  export function validateHandoff(): void {}
+CLEAN  export type CatalogEntry = never;          <- the term exemption cannot be what saves this one
+CLEAN  export function resolveCatalogs(): void {}
+CLEAN  export const validatedHandoffs = 1;
+CLEAN  export function loggedIn(): void {}         <- `logged` is not derived; no doubled consonants
+FIRES  export const catalogDefaults = 1;   "defaults"/Catalog
+FIRES  export type Validation = never;     "validation"/Gate
+```
+
+`CatalogEntry` matters more than `Catalog` does: `Catalog` is a defined term and would be excused by
+the term exemption whatever the matcher did, while `CatalogEntry` goes through the avoided loop and
+still passes. So `catalog` genuinely does not reach `log`, `logs`, `loged` or `loging`, and the
+distinction between growing a word forwards and cutting it back holds under test.
+
+**Where the widening actually landed.** Of the 316 hits, 57 exist only because of inflection — the
+line does not contain the bare entry. Grouped by the form that matched:
+
+| Entry → form | Hits | Reading |
+| --- | --- | --- |
+| `block` → `blocks`, `blocked`, `blocking` | 10 | what the Cap blocks; a fenced code block |
+| `document` → `documents`, `documented`, `documenting` | 14 | "the documents this check governs" |
+| `task` → `tasks` | 7 | `tasks.md` and this flow's own vocabulary |
+| `function` → `functions` | 5 | "a `library` of pure functions" |
+| `type` → `typed` | 5 | "the Core is typed as an actor whose…" |
+| `rule` → `rules` | 4 | "the rules the product promises" |
+| `level` → `levels` | 4 | precedence levels of a Harness resolution |
+| `interface` → `interfaces` | 3 | "the interfaces agreed before any code" |
+| `context` → `contexts` | 2 | candidate bounded contexts |
+| `directive` → `directives` | 2 | compiler directives, `@ts-expect-error` |
+| `folder` → `folders` | 1 | criterion 9's own wording |
+
+Every one is ordinary English, a TypeScript keyword or this flow talking about itself. **Not one is a
+domain concept being named**, so the widening did not smuggle a real violation past the table. The
+words are the same eleven `CLAUDE.md` already recorded as ordinary vocabulary, plus the one arrival
+judged below.
+
+**The classes the closed set deliberately leaves out have no live instance either.** This is the
+failure mode Round 1 reproved: a hole declared as a class, with instances of it sitting in the tree
+and nobody having looked. So the same sweep was run against a **deliberately wider** derivation than
+`inflectionsOf` — doubled consonants and the British `-lled` this repository's spelling would produce,
+`-al`, `-ally`, `-ly`, `-ation`, `-ment`, `-er`, `-ors`, `-ical`, and the irregular plurals of `-is`
+and `-x`:
+
+```
+avoided entries the prose scan actually enforces: 93
+wider-inflection hits on ENFORCED entries in docs/prd + docs/adr: 0
+wider-inflection hits on exported engine/domain names: 0
+```
+
+Zero, both scans. The closed set is incomplete by decision and the incompleteness is declared, and
+this time there is nothing live behind the declaration. That is the difference between Round 1's
+`CLAUDE.md` and this one.
+
+## Nothing was weakened to pass
+
+| Claim | How it was checked | Found |
+| --- | --- | --- |
+| No `_Avoid_` entry was deleted | `git diff e65ef6f c4f2f5f -- CONTEXT.md` | empty — byte-identical, 39 terms, 129 avoided entries |
+| The engine was not touched | `git diff 1f2d709 HEAD -- engine/ docs/adr/ techspec.md tasks.md tools/prd-structure.test.ts` | empty — all byte-identical |
+| No test was removed | every `it(` title, pre-fix versus now | one renamed (`is load-bearing, every entry` → `excuses the word it names, mechanically`), nine added, none removed |
+| No assertion was loosened | the renamed test's body in the diff; `expect(` count | body unchanged; 42 → 62 assertions |
+| No test was switched off | `grep -rE '\.(skip\|todo\|only)\(' engine/ tools/` | nothing |
+| The suite grew where it should | per-file counts, each file run alone | 458 total; only `glossary-check` changed, 26 → 35 |
+| Only six files changed at all | `git diff --name-only 1f2d709 HEAD` | `CLAUDE.md`, `bugs.md`, `prd.md`, `qa.md`, `glossary-check.ts`, `glossary-check.test.ts` |
+
+**The table went 33 → 33, and the two moves are not equivalent.** What left is `output`: no carrier in
+any form, in any document, so the module's own rule applies and the deletion is correct — I confirmed
+the word appears in the scanned documents only inside code spans and inside `techspec.md`'s fenced
+`AgentReport`, neither of which the prose scan reads. What arrived is `directive`, avoided under
+**Command**, carried by `qa.md:227` and `qa.md:361`, both of them about the `@ts-expect-error`
+compiler directive. **The arrival is legitimate**: it is category one of the table's own taxonomy, a
+compiler word rather than a domain intent, and it became visible for the same reason `interfaces` did.
+It is also not the table absorbing a hit it should have reworded — the two carriers are in QA's own
+document, which a bugfix has no standing to rewrite. The count staying at 33 hides a table that is
+strictly more honest than before: three entries excused nothing and now none does.
+
+## The thirteen criteria, re-run
+
+Re-run rather than inherited, because a change to `tools/` and two reworded PRD lines are still a
+change. `engine/` being byte-identical to `1f2d709` is a fact I verified, not an assumption, and it is
+why the behavioural criteria could be re-proven by re-running their proofs instead of re-deriving
+their reasoning.
+
+```
+$ npm test        Test Files 15 passed (15)   Tests 458 passed (458)
+$ npx tsc --noEmit   EXIT=0
+$ npm run build      EXIT=0   ✓ Generating static pages (28/28)
+```
+
+Per-file, each run on its own: `capability` 19, `money` 16, `ids` 6, `events` 6, `harness` 41,
+`contract` 25, `handoff` 20, `mission` 84, `meter` 63, `gate` 59, `replay` 39, `mission.e2e` 11,
+`fake-agent-runner` 17, `glossary-check` 35, `prd-structure` 17 — 458. Every count is Round 1's except
+`glossary-check`, which gained the nine tests the fix brought.
+
+**Three type-level guarantees falsified again at their source**, each restored and the tree verified
+clean between them:
+
+| Guarantee | Break | Result |
+| --- | --- | --- |
+| `Money` is branded | `type Money = number` | `TS2578` ×4 — `money.test.ts:117,128`, `meter.test.ts:996`, `fake-agent-runner.test.ts:204` |
+| A Core excludes execution Capabilities | `CoreCapability = Capability` | `TS2578` ×2 — `capability.test.ts:55,64` |
+| Exhaustiveness over both unions | `exhausted(value: unknown)` | `TS2578` — `mission.test.ts:1620` |
+
+Identical to Round 1, line for line.
+
+**Criteria 8, 9 and 10 re-armed against the real tree**, not against fixtures:
+
+- 8 — the plant above; both scans went red.
+- 9 — `mkdir docs/prd/half-thought` with only a `prd.md`: `missing PRD artifacts:
+  half-thought/techspec.md, half-thought/tasks.md`, `1 failed | 16 passed (17)`.
+- 10 — `export const loose: any = 1;` into `money.ts` and a bare `@ts-expect-error` into
+  `money.test.ts`: `engine/domain/money.ts:158`, `engine/domain/money.test.ts:140`,
+  `2 failed | 15 passed (17)`. Round 1 recorded three failures for the same plant; the third is not
+  reproducible, because `counts the deliberate probes` asserts `toBeGreaterThan(60)` and a plant adds
+  a probe rather than removing one. Round 1's own count was one too high; the two scans that matter
+  both fired. The honoured-probe count is still 75, which is what `qa.md:227` claims.
+
+**Criteria 2, 3, 5, 6, 7 and 12 reproduced from the public surface.** A probe of my own, five tests,
+importing only from `@engine/index` — `npx tsc --noEmit` clean **with the probe still in the tree**,
+which is the standard `CLAUDE.md` sets for a reviewer probe, then deleted:
+
+- a Core handed an execution Capability through a cast throws `ExecutionCapabilityError`;
+- a Handoff excusing a required Clause as a Gap is refused `contract-violation`, the violation says
+  "is required", the Refusal is the return value, **no fact is recorded** and the Delegation stays
+  open — `eventsOf` is unchanged and `refusedIn(stepsOf(…))` holds exactly one;
+- accruing the whole Cap halts; `delegate` is then refused `cap-reached`; `authorise-cap` at the same
+  amount is refused `cap-reached`; above it the Mission returns to `running`;
+- an open Gate refuses `deliver-mission`, and `kill-mission` ends the Mission and refuses everything
+  after;
+- `replay(eventsOf(run))` deep-equals `stateOf(run)` over a run containing a Refusal and a Gate.
+
+Criteria 1, 4, 11 and 13 rest on the same evidence as Round 1, re-run: the suite, the build, the
+`harness.test.ts` falsifications recorded above in Round 1, the 135 exported names compared against
+the glossary again by script, and `mission.e2e.test.ts` passing with its clock, dice and network
+stubbed. `docs/adr/` is byte-identical, so the seven-row reading in Round 1 stands unchanged.
+
+## The declared leftovers, judged
+
+The bugfix declared four things it found and did not fix. My reading of each, and one of them is the
+bug.
+
+1. **The closed set derives no irregular plural, no doubled consonant and no `-al`/`-ly` form, and a
+   form it cannot derive goes beside the set rather than into `CONTEXT.md`.** *Accepted cost, and
+   correctly placed.* The wider sweep above found zero live instances across 93 enforced entries, so
+   unlike Round 1 this declaration has nothing hiding behind it. Keeping the mechanics out of
+   `CONTEXT.md` is right for the reason given: the glossary is shared vocabulary, and "the plural of an
+   avoided word is also avoided" is not vocabulary. Worth knowing that this repository writes British
+   English (`modelled`, `authorised`, `over-modelled`), so `cancelled` and `signalled` are the two
+   forms most likely to be the first real gap — neither word is exempted, and neither is live today.
+2. **Five exemptions hang on a single line of prose each, and `directive`'s only carrier is `qa.md`.**
+   *Accepted cost, with a caveat, and it is the sharpest of the four.* Confirmed exactly:
+   `spec` → `techspec.md:3`, `setup` → `prd.md:99`, `conversation` → `prd.md:79`, `rejection` →
+   `techspec.md:189`, `feature` → `techspec.md:22`; `directive` had exactly two carriers when this round
+   began, both in this file and nowhere else. Three more sit at two carriers with one of them in
+   `qa.md`: `result`, `config`, `validation`. Writing this round moved the numbers without changing the
+   shape — `directive` now has four carriers and `result` three, and **all four of `directive`'s are
+   still in this one file**, which is the point rather than a mitigation. The sweep with the table
+   emptied now gives 367 hits across the same 33 words. The consequence is real and worth stating
+   plainly — **a future QA round that
+   rewrites this document instead of appending to it turns `npm test` red on a `tools/` test**, and the
+   same is true of anyone tidying one sentence of the techspec. I judge it an accepted cost rather than
+   a defect for three reasons: the failure message names the entry and prescribes the remedy, the
+   remedy is deleting one line, and the alternative — an exemption nobody can tell is dead — is the
+   defect BUG-2 was. What must never happen is the inverse, planting a sentence somewhere to keep an
+   entry alive, and `CLAUDE.md` now says so. It is recorded as a caveat below.
+3. **Deleting `output` makes the word live in prose for every future document.** *Accepted, and it is
+   the right direction.* `output` is `_Avoid_` under **Handoff**, and a PRD writing "the Zord's own
+   `output`" is naming a Handoff with the wrong word. The check will say so, and the answer will be
+   `Handoff` or a code span. The cost is that ordinary technical English about what a command prints
+   now needs a code span — this document was written under that constraint, as Round 1 was written
+   under the constraint that it is scanned at all.
+4. **`git checkout <file>` on a planted file discards your own edits to it.** *Accepted, and useful.*
+   A process lesson rather than a leftover in the delivery. It applied to me in the other direction: I
+   had no edits to `prd.md` or `mission.ts`, so `git checkout` was safe, and I verified the tree clean
+   after every revert rather than trusting it.
+
+And the fifth thing, which the bugfix did **not** declare and which is why this round reproves:
+widening the avoided side of the name scan without widening the term exemption beside it. `Delivery`
+is a defined term that also sits under `_Avoid_` for **Handoff** — the exact case the name scan's one
+exemption exists for — and the exemption compares a name against the term set as an exact word join,
+while the avoided side now matches every inflection. So the singular passes and the plural does not:
+
+```
+clean  export type Delivery = never;
+FIRES  export type Deliveries = readonly Delivery[];   "delivery"/Handoff
+FIRES  export function deliveriesOf(): void {}         "delivery"/Handoff
+```
+
+The delivery's own docstring says the widening "was measured against `engine/domain/` before it was
+turned on — all 135 exported names stay clean". True, and that is a measurement of the names that
+exist, which is exactly the weakness BUG-2 was about in another form: it cannot see a name nobody has
+written yet. See BUG-3.
+
+## Caveats — non-blocking, recorded
+
+Round 1's eight caveats all still hold; `engine/`, `CONTEXT.md` and `docs/adr/` are byte-identical, so
+nothing in them was addressed or worsened. Caveat 8 in particular is now sharper rather than merely
+true. Three more from this round:
+
+9. **`npm test` now depends on the wording of documents.** A `tools/` test fails when a document is
+   reworded such that an exemption loses its last carrier — five entries are one line from that, and
+   every line that carries `directive` is in this file. That is the price of an honest table and it is the
+   right price, but it means acceptance criterion 1 can be broken by prose that touches no code, and
+   whoever hits it should delete the entry the message names rather than argue with it.
+10. **The prose scan's exemptions widened with the matcher, silently and symmetrically.** An exempted
+    entry is dropped from the avoided list entirely, so exempting `cast` now also excuses `casts`,
+    `casted` and `casting`. That is coherent — the reason a word is ordinary English does not stop
+    applying in its plural — but it is a second-order effect of the fix that no test states, and the
+    `because` strings are all written in the singular.
+11. **Latent false-positive pressure grew, in a way that is bounded but real.** Every derived form
+    still carries the avoided word, so nothing unrelated can match; what can match is an inflection of
+    an avoided word used as ordinary English, and several are one sentence away — `noted` and `noting`
+    (`note`, under **Fact**), `requested` (`request`, under **Briefing**), `released` (`release`, under
+    **Delivery**), `deployed`, `positioned`, `traced`, `staged`. None is exempted and none is live. The
+    remedy is the machinery that already exists — reword, or an exemption with its reason — so this is
+    a cost of the check working, not a fault in it. It is recorded because the first person to meet one
+    will otherwise think the matcher is broken.
+12. **An inline code span that wraps across a line break defeats the span stripping.** Pre-existing —
+    `proseLinesOf` is byte-identical to Task 10 — and found the hard way while writing this round's
+    documents. The stripping is applied line by line, so a span opened on one line and closed on the
+    next leaves an unmatched backtick on each. The closing one then pairs with the *next* opening
+    backtick on its line, which blanks the ordinary prose between them and leaves the following code
+    span exposed. Both error directions follow: a quoted word is read as naming something, and a real
+    violation between two spans can be blanked away. It cost me one reproved run on a word that was
+    quoted in intent. The remedy is to keep a code span on one line, and it is worth a test —
+    `proseLinesOf` currently has none for a wrapped span. Not raised as a bug because it predates both
+    fixes and nothing in the tree is mis-scanned today, but it is the kind of hole BUG-1 was.
+
+## Reproduced, versus taken on trust
+
+Stated plainly, because a handoff's claim is not evidence.
+
+**Reproduced from scratch**: both fixes at the cause, by three independent routes for BUG-1 and by
+falsification for BUG-2; the clean state of both scans through the module's own readers rather than
+through its tests; the 316-hit sweep with the table emptied and its grouping by word; the 57
+inflection-only hits and the reading of each; the wider-inflection sweep over 93 enforced entries and
+135 names; the three spot-check names and six more of my own; the term-collision hunt that found
+BUG-3; the single-carrier locations of all five entries the bugfix declared, and `directive`'s two;
+`CONTEXT.md` and `engine/` byte-identity; the test-title and assertion-count comparison; the full
+suite, per-file counts, `tsc` and the site build; three type-level falsifications; criteria 8, 9 and 10
+re-armed in the real tree; criteria 2, 3, 5, 6, 7 and 12 from the public surface with a typechecked
+probe. And, unintentionally, the wrapped-code-span hole of caveat 12, by tripping the check twice on
+this document's own prose — which is the second time this round that the check has reproved the person
+holding it.
+
+**Taken on trust, and why**: Round 1's reading of the seven ADRs against the three-part test, and its
+comparison of the 135 exported names against the glossary term by term. Both are readings rather than
+runs, `docs/adr/` and `engine/` are byte-identical, and re-deriving a reading I made three hours ago
+against unchanged files would produce the same answer without adding evidence. Round 1's own
+statement that the criterion-10 plant produced three failures is the one thing I found and could not
+reproduce, and I recorded the correction above rather than repeating it. Whether the 33 exemptions are
+the calls the people who own the glossary would make remains a war-room question, unchanged. And the
+real runtime is still unreachable by QA, by design.
+
+## Next
+
+Run `/executar-bugfix` for BUG-3, then `/executar-qa` a third time. It is one asymmetry in one
+function and the fix is small, but nothing advances with an open bug, and a check that reproves
+correct code is the one defect that gets a check deleted.

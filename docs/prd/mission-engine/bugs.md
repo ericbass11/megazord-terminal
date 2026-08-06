@@ -1,7 +1,16 @@
 # Bugs — Mission Engine
 
-Opened by `/executar-qa` on 2026-08-06 against `1f2d709`. Both are in the documents the adherence
-check governs; nothing in `engine/` is at fault.
+Round 1 opened BUG-1 and BUG-2 by `/executar-qa` on 2026-08-06 against `1f2d709`. Both are in the
+documents the adherence check governs; nothing in `engine/` is at fault.
+
+Round 2 verified both fixes against `c4f2f5f` and opened **BUG-3**, which the fix to BUG-1
+introduced. Current state:
+
+| Bug | Status | Verified by QA |
+| --- | --- | --- |
+| BUG-1 | fixed | yes — Round 2 reproduced the fix at the cause by three independent routes |
+| BUG-2 | fixed | yes — Round 2 falsified the corrected test by reinstating the deleted entry |
+| BUG-3 | **open** | opened by Round 2 |
 
 ## BUG-1 — Two `_Avoid_` words are live in `prd.md` prose, escaping the scan through inflection
 
@@ -220,3 +229,81 @@ check governs; nothing in `engine/` is at fault.
 
   The old test cannot produce that red: with `output` in the table it passes, because the sentence it
   measures is one it wrote itself. That is the defect, and the red above is the fix.
+- **QA verification (Round 2)**: reproduced independently. The deleted entry was put back into
+  `PROSE_EXEMPTIONS` verbatim and the suite run: exactly one test failed — the real-tree one, which
+  named the reinstated entry in its message — and the mechanical test it
+  replaced was among the 34 that **passed**, with the dead entry sitting in the table. Both halves of
+  the defect demonstrated in one run. Reverted; tree verified clean; 35 pass again. Sweeping the real
+  documents with the table emptied gives 316 hits across exactly 33 distinct words, so every one of the
+  33 entries now has at least one carrier and no hit falls outside the table. Accepted.
+
+## BUG-3 — the fix to BUG-1 made the plural of a glossary term a violation
+
+- **Criterion**: acceptance criterion 8 of `prd.md` — "a test fails when a term listed under `_Avoid_`
+  in `CONTEXT.md` is used **to name a domain concept**". A name that *is* the glossary's own term is
+  the opposite of that, and PRD open risk 5 names this failure mode directly: "Adherence checks can
+  produce false positives". It also breaks the one exemption `namingViolations` documents for itself:
+  "a name that is itself a glossary term is never a violation. `Delivery` is a defined term and also
+  sits under `_Avoid_` for **Handoff**, so `export type Delivery` is the correct name … and a scan
+  without this would reprove the model for using its own vocabulary."
+- **Observed**: BUG-1's fix widened the **avoided** side of the name scan into every inflection and
+  left the **term** exemption beside it un-widened. `namingViolations` skips a name whose word join is
+  exactly a term (`tools/glossary-check.ts:462`, `defined.has(words.join(" "))`), while the avoided
+  side matches through `runOf`, whose tail is `inflectionsOf(last)`. So `delivery` reaches `deliveries`
+  and `deliveried`, but the term `Delivery` only ever protects the exact word `delivery`:
+
+  ```
+  clean  export type Delivery = never;
+  FIRES  export type Deliveries = readonly Delivery[];   "delivery" (_Avoid_ under Handoff)
+  FIRES  export function deliveriesOf(): void {}         "delivery" (_Avoid_ under Handoff)
+  ```
+
+  `Delivery` is a real exported name of `engine/domain/mission.ts`, re-exported from
+  `engine/index.ts`, so a collection of them is the ordinary next name someone writes — a Cockpit or
+  Cortex PRD reading over many Missions needs exactly `Deliveries` or `deliveriesOf`. There is nowhere
+  to excuse it: the name scan has **no exemption table** by decision, so the only two ways out are
+  renaming correct code or editing the tool, and renaming correct code to satisfy a scan is how a scan
+  gets switched off in its second week — the exact outcome the whole inflection design was argued for.
+
+  Three things bound the defect, and none of them removes it:
+  - **Latent, not live.** All 135 exported names of `engine/domain/` pass today; the plural does not
+    exist yet.
+  - **One word wide.** `delivery` is the only entry in `CONTEXT.md` that is both a defined term and an
+    `_Avoid_` word under another term, so `Delivery` is the only collision.
+  - **Prose is unaffected.** `proseViolations` filters an avoided entry out entirely when it is a term
+    (`:592`), so `delivery` is never enforced in prose in any form. Confirmed: "The deliveries were
+    consolidated." and "Two Deliveries, one Mission." both give zero violations. The asymmetry exists
+    only in the name scan.
+- **Expected**: a name that is the glossary's own term, in any form the same matcher is willing to
+  derive, is never a violation. The two sides of the comparison should be widened together — the term
+  exemption reading `inflectionsOf` the way the avoided side does — so that `Deliveries` is excused for
+  the reason `Delivery` is, rather than by luck of spelling. The fix belongs in `namingViolations`, not
+  in `CONTEXT.md` and not in a new exemption table, and it wants a test in the same shape as the
+  existing `still does not shorten: 'defaults' is avoided and 'catalogDefault' is still not it` — a
+  planted `export type Deliveries` that must stay clean, and a falsification showing it fires when the
+  term side is narrowed back.
+- **Evidence**: `tools/glossary-check.ts:454-480` (`namingViolations`, the exact-join term skip at
+  `:462`), `:199-207` (`runOf`, the inflected avoided side), `:166-189` (`inflectionsOf`),
+  `:584-594` (`proseViolations`, where the term filter is applied to the entry instead and prose is
+  therefore safe). Reproduced by planting declarations through the module's own exported functions:
+
+  ```
+  === glossary TERMS that also sit in some _Avoid_ list ===
+    "delivery" is a term AND avoided under Handoff
+
+  === a legitimate PLURAL of such a term, as an exported domain name ===
+    clean  export type Delivery
+    FIRES  export type Deliveries   -> "delivery" (_Avoid_ under Handoff)
+    FIRES  export type Deliveried   -> "delivery" (_Avoid_ under Handoff)
+
+  === prose side, for contrast ===
+    0 violation(s)  "The deliveries were consolidated."
+    0 violation(s)  "Two Deliveries, one Mission."
+  ```
+
+  The delivery's own docstring records the measurement that missed it: the widening "was measured
+  against `engine/domain/` before it was turned on — all 135 exported names stay clean". That is true,
+  and it is a measurement of the names that exist. It cannot see a name nobody has written yet, which
+  is BUG-2's shape in another form — a check measured against what is there rather than against what
+  it claims.
+- **Status**: open
