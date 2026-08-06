@@ -25,7 +25,7 @@ instead of needing machinery of their own:
 - **Refusal without human involvement** (criterion 3) is the ordinary return value of `decide` —
   the domain has no way to ask a human, so it cannot accidentally do so.
 
-The engine is a library. Time, cost prices, ids and agent execution enter through the edges:
+The engine is a library. Time, cost prices, ids and Zord execution enter through the edges:
 `decide` takes an `occurredAt` on the command, and process execution sits behind `AgentRunner`.
 
 ## Domain impact
@@ -38,7 +38,7 @@ Single context, as decided in the grill. New terms introduced by this work, to b
 | `Command`    | An intent submitted to a Mission, which the domain accepts or refuses.           |
 | `Event`      | A fact that happened to a Mission. Append-only, never revised.                   |
 | `Decision`   | The result of `decide`: accepted events, or a Refusal.                           |
-| `Clause`     | One obligation of a Contract, which a Handoff either satisfies or does not.       |
+| `Clause`     | One thing a Contract asks for, which a Handoff either satisfies or does not.      |
 | `Capability` | A permission a Zord holds. The Core holds none of the executing kind.            |
 
 `Core` is the orchestrator and nothing else — never a folder, never a module. The module is
@@ -132,7 +132,7 @@ throws — and a test proves the cast path throws rather than silently passing.
 
 - **Mutable aggregate class with methods.** Idiomatic and shorter, but the Replay criterion would
   need a parallel event-recording mechanism, and the two would drift. Event sourcing makes the
-  audit trail the source of truth instead of a side effect.
+  recorded facts the source of truth instead of a side effect.
 - **Zod (or any schema library) for contract validation.** A Contract here is a domain concept
   with its own required/optional/gap rule, not a payload shape. A schema library would model the
   wrong thing and add a dependency to a module whose value is having none.
@@ -166,12 +166,12 @@ All three of hard-to-reverse, surprising-without-context and real-trade-off:
    and two authorisations from stale readings produce a Cap nobody chose.
 
 7. **The Replay is the sequence of Decisions, not a second Event log.** Added in Task 9 to settle
-   the obligation Tasks 6 and 8 handed forward. Criterion 7 requires refusals in the Replay, and a
+   the question Tasks 6 and 8 handed forward. Criterion 7 requires refusals in the Replay, and a
    Refusal cannot be an Event: `decide(UNOPENED_MISSION, command)` refuses before any Mission
    exists, and every Event carries a `missionId`, so a fact-based shape could only ever hold *some*
    refusals. The fold stays the only source of truth for state — `stateOf(replay)` is
-   `replay(eventsOf(replay))` — and the audit surface is a reader over Commands and Decisions.
-   General form: when the audit surface and the state disagree about what counts as history, add a
+   `replay(eventsOf(replay))` — and the Replay itself is a reader over Commands and Decisions.
+   General form: when the reading and the state disagree about what counts as the past, add a
    reader, not a fact.
 
 `RefusalReason` carries a fifth member, `unrunnable-harness`, added in Task 4 and accepted in

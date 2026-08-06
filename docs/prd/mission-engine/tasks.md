@@ -122,7 +122,7 @@ Order: dependencies first, and every task leaves the repo green.
 
 ## Task 10 — Adherence checks and documentation
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: the glossary and the SDD layout police themselves; `CONTEXT.md` carries the new terms
   and `docs/adr/` carries the four decisions from the techspec.
 - **Touches**: `tools/glossary-check.ts` and test, `tools/prd-structure.test.ts`, `CONTEXT.md`,

@@ -126,6 +126,11 @@ The human answer to an open Gate: approve, and the Mission resumes as it was, or
 and the reason returns as context. Not a Decision, which is what the domain answers a Command with.
 _Avoid_: sign-off, gate result
 
+**Halt**:
+A Mission stopped and waiting for a human, together with what it is waiting for — a Gate, or its Cap.
+Only one thing ends each: a Gate decision, an Authorisation, or a Kill.
+_Avoid_: pause, suspension, freeze
+
 **Kill**:
 The human decision to end a Mission with no Delivery. Available while it is running or stopped,
 whichever stopped it, and it answers no Gate — it ends the Mission the Gate asked about.
@@ -219,6 +224,7 @@ in conversation, right is what is written in code and in every artifact.
 | recusa         | `Refusal`     |
 | gate           | `Gate`        |
 | decisão de gate | `Gate decision` |
+| parada         | `Halt`        |
 | matar          | `Kill`        |
 | entrega        | `Delivery`    |
 | workspace      | `Workspace`   |

@@ -849,6 +849,103 @@ Task 9 with a test pinning the current behaviour, not fixed from inside a task w
 the fix belongs in `evolve`, and it is a rule change (which Events a Mission accepts) that deserves its own
 decision.
 
+### The adherence check scans names and prose, and nothing else
+
+Built in Task 10 as `tools/glossary-check.ts`, a library of pure functions plus four readers, so a fixture
+can plant a violation instead of the test only ever asserting that the tree is clean. What it reads:
+
+- `domainSources()` — `engine/domain/*.ts` **without** the tests, scanned for **exported declaration
+  names**. A test exports nothing that claims to be a concept, and `engine/ports` and `engine/adapters`
+  are out by decision, which is the whole reason the scope is written that way: `AgentRunner`, `AgentRun`,
+  `AgentReport`, `fakeAgentRunner` and `AgentRun.instruction` are all techspec-pinned names of a
+  **boundary**. The test pins both halves — the word is live if you hand the port's text to the scan, and
+  the reader does not hand it over.
+- `prdDocuments()` and `adrDocuments()` — prose, with fenced blocks, inline code spans and link targets
+  removed. `docs/adr/` is beyond criterion 8 and included anyway: an ADR is where a decision about the
+  domain is written down. **`qa.md`, `bugs.md` and `review.md` are scanned too**, so the flow's own later
+  documents must use the glossary's words or add an exemption.
+- `CONTEXT.md` is read and never scanned — every `_Avoid_` line is a hit by construction — and
+  `docs/PRODUTO.md` stays out because SDD is forward-only.
+
+Matching is by **word**, never substring and never stem. `Catalog` contains `log`; `catalogDefault` is not
+the avoided `defaults`; `validateHandoff` contains no `validation`. An identifier is split on case and
+punctuation, and a multi-word entry (`lead agent`, `agent list`) matches only as consecutive words. One
+mechanic worth keeping: **an entry the glossary wrote in capitals matches case-sensitively.** `TODO` is
+avoided under **Gap** as the code marker, and `tasks.md` writes `- **Status**: todo` on every task — a
+case-insensitive scan fails the task list for having statuses.
+
+### Reword when the prose names a concept; exempt only ordinary vocabulary
+
+The prose scan found nine real hits on its first run over `docs/prd/`, and the split between the two
+answers is the rule. **Reworded**, because the line was naming a domain concept with an avoided word:
+`Clause` defined as "one **obligation** of a Contract" (→ "one thing a Contract asks for"), the Replay
+called "the **audit** surface" three times (→ "the Replay itself is a reader"), "**agent** execution enters
+through the edges" (→ "Zord execution"), "a real **debt**, tracked" (→ "real and tracked"). **Exempted**,
+because ordinary English, a TypeScript keyword or the vocabulary the flow uses about itself: 33 entries in
+`PROSE_EXEMPTIONS`, each carrying its reason as a string.
+
+Two properties make that table honest, and both are tests:
+
+- **Every entry names a word `CONTEXT.md` really avoids.** An exemption for a word the glossary does not
+  list is fiction that outlives the sentence it was written for.
+- **Every entry is falsified.** The test scans a carrier sentence with the table and with `[]`, and
+  asserts the word fires without it and not with it. An exemption that excuses nothing gets deleted, not
+  kept "just in case" — the same standard `CLAUDE.md` already sets for a type-level probe.
+
+The twelve ordinary-vocabulary words this file recorded were not the whole list: 30 distinct avoided words
+were actually hit, among them `cast` (a type assertion, not a Roster), `memory` ("state lives in memory" is
+RAM), `limit` (the glossary defines the **Cap** itself as "the spending limit of a Mission"), `agreement`
+(a candidate context, and a heading of `CONTEXT.md`) and `rejection` (the compiler rejecting code). Of the
+129 avoided words the glossary now lists, **93 stay live** in prose — `squad`, `subtask`, `worker`,
+`maestro`, `dispatch` and `agent` among them.
+
+### `any` and `@ts-expect-error` cannot be grepped for
+
+Criterion 10's check (in `tools/prd-structure.test.ts`) blanks comments, string literals and
+regular-expression literals first, via `codeOf`. Both reasons are load-bearing:
+
+- **All 28 mentions of `any` in `engine/` are prose** — "the `any[]` that `Array.isArray` narrows an
+  `unknown` to", "beyond any Cap a Mission could have been opened with". A raw scan fails on 28 correct
+  lines and gets switched off the same afternoon.
+- **A doc comment that mentions `@ts-expect-error` is not a directive.** TypeScript honours it only when
+  the directive **opens** the comment, so `` `TS2578: Unused '@ts-expect-error' directive` `` mid-sentence
+  is not a suppression — nine of those exist in `engine/`, and the regex mirrors what the compiler
+  honours rather than what a grep finds.
+
+What counts as stray: `@ts-expect-error` outside a `*.test.ts` (where it would hide an error from
+`npm run build`, which is what enforces every guarantee here), a directive whose reason is under ten
+characters (the 75 real probes all carry a sentence; the shortest is 47 characters), and `@ts-ignore` or
+`@ts-nocheck` anywhere — `@ts-ignore` is `@ts-expect-error` with the proof removed, since it never starts
+failing when the error goes away.
+
+### A check that only passes proves nothing: five plants, five reds
+
+Task 10's evidence, and the pattern to repeat. Each was planted in the real tree, run, and reverted:
+`export type Squad` in `engine/domain/ids.ts` → `squad` under **Combination**; "The squad hands a subtask to
+a worker." appended to `prd.md` → three violations; `const plantedLoose: any = 1;` → the `any` scan;
+`// @ts-expect-error` with nothing after it in a test → the stray scan; `mv` of `techspec.md` → criterion 9.
+Fixture-only assertions are not the same evidence: they prove the function works, not that it is pointed at
+the tree.
+
+### `Halt` was the term the engine had and the glossary did not
+
+Criterion 11 checked by comparing exported domain type names against `CONTEXT.md`: everything matched
+except `Halt`, which `mission.ts` has carried since Task 7 (`cap-reached` or `gate-open`, with the GateId
+when there is one). Added, with its spoken form `parada`.
+
+`Money` and `Instant` stay **out** on purpose: the glossary's own rule is that a term belongs there only if
+it is specific to this domain, and a branded amount and a branded timestamp are general programming
+concepts. What is domain-specific about them is a decision, and that lives in ADR 0004.
+
+### The adherence scan matches words, so inflections escape it
+
+Found while reviewing Task 10 by planting prose into `prd.md`: `maestro`, `squad`, `subtask` and
+`worker` were all caught, and **`dispatches` was not** — `dispatch` is the `_Avoid_` entry and the
+scan matches whole words, never stems. That is deliberate, and the alternative is worse: a stem
+scan flags `validateHandoff` for `validation` and `Catalog` for `log`, which is how a check gets
+switched off in its second week. Live with the hole, and when a violation slips through in a plural
+or a verb form, add that form to the `_Avoid_` list rather than making the matcher smarter.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without
@@ -889,3 +986,8 @@ therefore has **no working linter**, which matters whenever a review step wants 
   `engine/mission.e2e.test.ts` at the root, which imports only `@engine/index`. 406 tests. It has **no
   dependency of any kind** — every import inside `engine/` is a relative path, and `mission.e2e.test.ts`
   asserts that.
+- The **adherence checks** are `tools/glossary-check.ts` (the scanning library), with
+  `tools/glossary-check.test.ts` for criterion 8 and `tools/prd-structure.test.ts` for criteria 9 and 10.
+  They are part of `npm test`, which is 449 tests. `tools/` uses `node:fs` and is the only place in the
+  repo that reads the tree.
+- The **decisions** are `docs/adr/0001..0007`, one per entry of the techspec's "Decisions worth an ADR".

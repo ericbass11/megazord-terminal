@@ -23,7 +23,7 @@ invariants, proven by tests that fail when a rule is broken. Around it, the docu
 foundation: the glossary in active use, the architectural decisions recorded, and adherence
 checks that break the build instead of relying on goodwill.
 
-No UI. No real agent process spawning. No persistence. The engine is the heart — the organs come
+No UI. No real CLI process spawning. No persistence. The engine is the heart — the organs come
 in later PRDs.
 
 ## Scope
@@ -56,7 +56,7 @@ in later PRDs.
 3. Persistence of any kind — no database, no file store. State lives in memory.
 4. The MCP server and the 52 tools.
 5. Providers, credentials, media generation, marketplace, voice.
-6. Refactoring the site to consume the glossary. It is a real debt, tracked, but a separate PRD.
+6. Refactoring the site to consume the glossary. It is real and tracked, but a separate PRD.
 7. Retro-documenting the site: SDD applies from here forward.
 8. **Token counting.** The glossary defines the Meter as the accounting of tokens *and* cost, and
    this PRD delivers cost only: the `AgentRunner` port reports a cost and there is no price list to
@@ -136,8 +136,11 @@ Each line is checkable by someone who did not take part in the grill.
 6. A test proves a Gate blocks progress until decided, and that killing it stops the Mission.
 7. A test proves the Replay contains every delegation, refusal, gate decision and cost in order,
    and that replaying it reconstructs the same final state.
-8. A test fails when a term listed under `_Avoid_` in `CONTEXT.md` appears in `engine/` source or
-   in a `docs/prd/` body.
+8. A test fails when a term listed under `_Avoid_` in `CONTEXT.md` is used **to name a domain
+   concept**: an exported symbol name in `engine/domain/`, or a word in `docs/prd/` and `docs/adr/`
+   prose outside fenced code. Narrowed from "anywhere in `engine/`" during Task 1's review, and the
+   reason is in `CLAUDE.md`: twelve `_Avoid_` words are TypeScript keywords, and the port's
+   techspec-pinned `AgentRunner` legitimately contains one.
 9. A test fails when a `docs/prd/<slug>/` folder is missing `prd.md`, `techspec.md` or `tasks.md`.
 10. `engine/` compiles under strict TypeScript with no `any` and no `@ts-expect-error` outside the
     tests that deliberately probe the type-level guarantees.
