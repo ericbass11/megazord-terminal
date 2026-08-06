@@ -89,7 +89,7 @@ criterion did.
 
 ## Task 8 — The Core that drives a Combination
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: the deterministic driver: given a Briefing and a Combination, it opens the Mission,
   delegates each Slice in the declared order, invokes the Zord for each, submits the Handoff it gets
   back, resubmits after a Refusal, raises the Combination's Gates, and delivers.

@@ -1728,6 +1728,87 @@ under load with nothing else in the tree (reproduced: 3 runs, 1 failure). A test
 keeps the Pane alive past the burst; a test about the **exit** does not, and must not assert the tail.
 Recorded as a finding rather than fixed from inside a task that does not own that file.
 
+### Injecting the judgement is the ADR one stack frame further out
+
+The Core needs a Handoff and an `AgentReport` is not one, so the tempting shape is an injected
+`handoffFrom(run, report) => Handoff`: the caller owns the judgement, the driver owns the order, and
+the boundary reads honest. It is ADR 0010 smuggled past through a function parameter. The caller of a
+drive is a **Surface**, not the Zord, so a function that turns `report.output` into a scope and a set
+of Gaps is the prose heuristic wherever it is written, and it inherits the ADR's decisive property:
+nobody can tell a heuristic that missed a Gap from a Zord that did not declare one.
+
+The test is not "who wrote the function" but **"could anybody tell its answer from the Zord's own?"**
+If not, the function is the party being judged writing its verdict. The driver waits on the Replay
+instead — the file is the channel, ADR 0009 read from the other side — and a `@ts-expect-error` probe
+pins the absence of the option, so whoever adds one deletes a directive and states the decision.
+
+### A count the record already carries is not a field
+
+How many times a Delegation has been invoked is `eventsIn(steps, "cost-accrued")` filtered by its id,
+not a counter the driver holds. That is what makes a drive resumable across a restart, and it is
+"openness is the absence of an answer" applied to a tally: if the log can be read for it, holding it
+is a second copy a hand-written log could contradict. It also counts invocations somebody *else* made
+through `agent_invoke`, which is the truth — a run happened and a Handoff could have come from it.
+
+### A loop that re-reads state must stop at its own Refusal
+
+A driver that re-derives its next gesture from the state is loop-free only while every gesture changes
+the state. A Refusal changes nothing, so carrying on past one asks the same question forever: a
+`delegate` refused `missing-capability` re-asks every turn, and a refused accrual puts the drive
+straight back into spending real money. **A Refusal of a Command the driver itself submitted ends the
+drive**; a Refusal of somebody else's Command — a Zord's Handoff — is the loop working. Proven by
+plant, and the plant's signal is a 30-second timeout rather than an assertion, which is itself worth
+knowing: a loop bug fails by hanging.
+
+### Stopping and being driven again beats waiting, wherever a human is the next mover
+
+The Gate could have been waited on with the same poll that waits for a Handoff. Returning
+`halted-at-gate` instead makes the drive a function of the file: it holds nothing across the human's
+absence, it resumes in another process, and criterion 5 becomes two calls with a fresh store — so
+resumption is proven as a side effect of proving the drive. A wait would have been a long-lived object
+holding a Mission, which is what ADR 0009 refuses.
+
+### The Handoff lands before the accrual, and that is the Zord's doing
+
+A Zord submits while it runs, and the Core records what the run cost once `run` resolves, so the
+Replay reads `delegate, submit-handoff, accrue-cost` — not the order anyone writing the driver expects.
+Before asserting a Command order, remember it is a fact about *when a Zord acts*, not a choice the Core
+made.
+
+### A pin on somebody else's defect is arranged to go red the day it is fixed
+
+Task 8 found that `added()` in `engine/domain/replay.ts` dereferenced `event.harness.cli` off a
+`Delegated` fact without reading it as `unknown`, so `stepsOf` threw on a damaged record — the Event
+half of the rule this file already states for the Command half, and a Gap `mission-store.ts` had
+declared before anything tripped over it. The task could not edit `engine/`. It did the right thing
+twice: it did **not** walk the entries itself to dodge the engine's reading, which would have been a
+second implementation of it, and it pinned the throw with `rejects.toThrow(TypeError)` and the finding
+written beside it, saying in the comment that the test goes red the day the engine is fixed.
+
+It went red in review, within the hour. That is the pattern: **when a defect is not yours to fix, pin
+the current behaviour with a test that fails when it is fixed, and say so in the comment.** A finding
+in a report is read once; a pin is read by whoever breaks it.
+
+### A guard behind a throwing collaborator is unreachable code that looks like defence
+
+The same fix made a second thing true that nobody had noticed. The driver had two `unrunnable-harness`
+branches — "records null where its Harness should be" and "names no cli" — and the first was
+**unenterable** while the engine threw first, so it read as defence and was dead. Fixing the engine did
+not merely stop a throw; it turned a guard nothing could reach into the one that answers, and more
+precisely than its neighbour.
+
+So the cost of a throwing collaborator is not only the throw. **Every guard downstream of it that
+handles the same damage is unreachable, and unreachable guards test green forever.** When you harden a
+reading, re-run the callers' own damage tests and check which of their branches just came alive.
+
+### Six nested dereferences hid behind one hardened function
+
+`asked` was hardened and `added` was not, in the same file, for the same reason, against the same
+threat. The lesson is about scope of a fix rather than about either function: when a rule is applied to
+one half of a discriminated pair, **the other half is where it is missing**, and "the one place a
+reading dereferences a field" was a comment in the source that had been false since the day it was
+written.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

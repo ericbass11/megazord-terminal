@@ -771,3 +771,119 @@ describe("what the type system refuses", () => {
     expect(refusedIn(steps())[0]?.decision.refusal.reason).toBe("contract-violation");
   });
 });
+
+/* -------------------------------------------------------------------------------------------------
+ * A fact nothing validated
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * The Event side of the non-throwing contract, added in review after the Task 8 driver declared it.
+ *
+ * `runtime/mission-store.ts` loads a Replay **without judging it** — ADR 0009 — so a hand-edited line, a
+ * file recovered from a torn tail, or a deserialiser upstream can hand this reading an Event whose shape
+ * no rule ever checked. `asked` was hardened for exactly this on the Command side and `added` was not, so
+ * `stepsOf` still threw on six nested dereferences. The rule `CLAUDE.md` records is one rule, and it
+ * covers both halves of a Step: **a reading is part of the non-throwing contract**.
+ *
+ * Each case asserts the reading does not throw *and* what it says instead, because "does not throw" alone
+ * would pass just as happily for a summary that invented a value.
+ */
+describe("a Step read off a fact nothing validated", () => {
+  /** One accepted Step carrying whatever the file happened to hold. */
+  function stepFor(damaged: string): Step {
+    const entry = {
+      command: JSON.parse(
+        '{"kind":"deliver-mission","occurredAt":"2026-08-06T10:00:00.000Z"}',
+      ) as MissionCommand,
+      decision: { kind: "accepted" as const, events: [JSON.parse(damaged) as MissionEvent] },
+    };
+    const read = stepsOf([entry]);
+    return read[0] as Step;
+  }
+
+  it("says a Harness is not described rather than dereferencing one that is not there", () => {
+    expect(() => stepFor('{"kind":"delegated"}')).not.toThrow();
+    expect(stepFor('{"kind":"delegated"}').summary).toContain(
+      "running a Harness this fact does not describe",
+    );
+    // Present but not an object, and present but incomplete, answer the same way — the reading makes no
+    // distinction the record cannot support.
+    expect(stepFor('{"kind":"delegated","harness":null}').summary).toContain(
+      "running a Harness this fact does not describe",
+    );
+    expect(stepFor('{"kind":"delegated","harness":{"cli":"claude"}}').summary).toContain(
+      "running a Harness this fact does not describe",
+    );
+  });
+
+  it("says a Contract is not described rather than counting a Handoff that is not there", () => {
+    expect(stepFor('{"kind":"handoff-accepted"}').summary).toContain(
+      "covering a Contract this fact does not describe",
+    );
+    // `satisfies` present but not a list is the same absence: there is nothing to count.
+    expect(
+      stepFor('{"kind":"handoff-accepted","handoff":{"satisfies":"two","gaps":[]}}').summary,
+    ).toContain("covering a Contract this fact does not describe");
+  });
+
+  it("does not report a Halt whose reason was lost as a Cap", () => {
+    // The branch this replaces was an `else`, so a damaged Halt read as "it reached its Cap" — a
+    // different fact, and one that sends a human to the wrong remedy. `CLAUDE.md` records that rule
+    // about Refusal reasons; it is the same rule about a reading.
+    expect(stepFor('{"kind":"mission-halted"}').summary).toContain(
+      "and the Mission stopped for a reason this fact does not describe",
+    );
+    expect(stepFor('{"kind":"mission-halted","halt":{"reason":"gate-open"}}').summary).toContain(
+      "and the Mission stopped at a Gate this fact does not name",
+    );
+    // And the two well-formed shapes still read exactly as they did.
+    expect(
+      stepFor('{"kind":"mission-halted","halt":{"reason":"cap-reached"}}').summary,
+    ).toContain("and the Mission stopped because it reached its Cap");
+    expect(
+      stepFor('{"kind":"mission-halted","halt":{"reason":"gate-open","gateId":"g-1"}}').summary,
+    ).toContain('and the Mission stopped at Gate "g-1"');
+  });
+
+  it("does not report an unreadable Gate decision as an approval", () => {
+    expect(stepFor('{"kind":"gate-decided"}').summary).toContain(
+      "and a human answered it in a way this fact does not describe",
+    );
+    // A revision with no reason is not a revision anybody can read, and it is not an approval either.
+    expect(
+      stepFor('{"kind":"gate-decided","decision":{"kind":"revision-requested"}}').summary,
+    ).toContain("and a human answered it in a way this fact does not describe");
+  });
+
+  it("says a Delivery is not described rather than counting artifacts that are not there", () => {
+    expect(stepFor('{"kind":"mission-delivered"}').summary).toContain(
+      "with a Delivery this fact does not describe",
+    );
+    expect(
+      stepFor('{"kind":"mission-delivered","delivery":{"artifacts":[],"summary":"done"}}').summary,
+    ).toContain('with no artifact as proof: "done"');
+  });
+
+  it("reads a whole Replay of damaged facts without throwing once", () => {
+    const damaged: readonly string[] = [
+      '{"kind":"delegated"}',
+      '{"kind":"handoff-accepted"}',
+      '{"kind":"gate-decided"}',
+      '{"kind":"mission-halted"}',
+      '{"kind":"mission-delivered"}',
+    ];
+    for (const one of damaged) {
+      expect({ one, threw: throwsFor(one) }).toEqual({ one, threw: false });
+    }
+  });
+
+  /** Whether reading a Step off this fact throws. Kept out of the loop so the failure names the fact. */
+  function throwsFor(damaged: string): boolean {
+    try {
+      stepFor(damaged);
+      return false;
+    } catch {
+      return true;
+    }
+  }
+});

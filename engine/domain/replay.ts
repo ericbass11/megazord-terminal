@@ -339,16 +339,26 @@ function added(event: MissionEvent): string {
   switch (event.kind) {
     case "mission-opened":
       return `in ${event.mode} Mode with a Cap of ${formatMoney(event.cap)}`;
-    case "delegated":
+    case "delegated": {
+      const cli = textIn(event.harness, "cli");
+      const model = textIn(event.harness, "model");
+      const effort = textIn(event.harness, "effort");
+      if (cli === undefined || model === undefined || effort === undefined) {
+        return "running a Harness this fact does not describe";
+      }
+      return `running ${cli}/${model} at ${effort} effort`;
+    }
+    case "handoff-accepted": {
+      const satisfies = sizeIn(event.handoff, "satisfies");
+      const gaps = sizeIn(event.handoff, "gaps");
+      if (satisfies === undefined || gaps === undefined) {
+        return "covering a Contract this fact does not describe";
+      }
       return (
-        `running ${event.harness.cli}/${event.harness.model} ` +
-        `at ${event.harness.effort} effort`
+        `covering ${count(satisfies, "Clause")} ` +
+        `and declaring ${count(gaps, "Gap")}`
       );
-    case "handoff-accepted":
-      return (
-        `covering ${count(event.handoff.satisfies.length, "Clause")} ` +
-        `and declaring ${count(event.handoff.gaps.length, "Gap")}`
-      );
+    }
     // The amount and the Pane are already in the intent. Repeating them here would print every accrual
     // twice on one line.
     case "cost-accrued":
@@ -357,19 +367,39 @@ function added(event: MissionEvent): string {
       return `and the Mission may now spend up to ${formatMoney(event.cap)}`;
     case "gate-raised":
       return `asking ${JSON.stringify(event.question)}`;
-    case "gate-decided":
-      return event.decision.kind === "approved"
-        ? "and a human approved it"
-        : `and a human asked for a revision: ${JSON.stringify(event.decision.reason)}`;
-    case "mission-halted":
-      return event.halt.reason === "gate-open"
-        ? `and the Mission stopped at Gate "${event.halt.gateId}"`
-        : "and the Mission stopped because it reached its Cap";
-    case "mission-delivered":
-      return (
-        `with ${count(event.delivery.artifacts.length, "artifact")} as proof: ` +
-        `${JSON.stringify(event.delivery.summary)}`
-      );
+    case "gate-decided": {
+      const answer = textIn(event.decision, "kind");
+      if (answer === "approved") {
+        return "and a human approved it";
+      }
+      const reason = textIn(event.decision, "reason");
+      if (answer === "revision-requested" && reason !== undefined) {
+        return `and a human asked for a revision: ${JSON.stringify(reason)}`;
+      }
+      return "and a human answered it in a way this fact does not describe";
+    }
+    case "mission-halted": {
+      const stopped = textIn(event.halt, "reason");
+      if (stopped === "gate-open") {
+        const gate = textIn(event.halt, "gateId");
+        return gate === undefined
+          ? "and the Mission stopped at a Gate this fact does not name"
+          : `and the Mission stopped at Gate "${gate}"`;
+      }
+      // Not an `else`: a Halt whose reason was lost would otherwise be reported as a Cap, which is a
+      // different fact and sends a human to the wrong remedy.
+      return stopped === "cap-reached"
+        ? "and the Mission stopped because it reached its Cap"
+        : "and the Mission stopped for a reason this fact does not describe";
+    }
+    case "mission-delivered": {
+      const artifacts = sizeIn(event.delivery, "artifacts");
+      const summary = textIn(event.delivery, "summary");
+      if (artifacts === undefined || summary === undefined) {
+        return "with a Delivery this fact does not describe";
+      }
+      return `with ${count(artifacts, "artifact")} as proof: ${JSON.stringify(summary)}`;
+    }
     // The reason is already in the intent, and it is the only thing this fact carries.
     case "mission-killed":
       return "";
@@ -404,6 +434,43 @@ function delegationAnsweredBy(claimed: Handoff): string {
     return `Delegation "${value.delegationId}"`;
   }
   return "a Delegation this Command does not name";
+}
+
+/**
+ * A property of a value **nothing validated**, read as `unknown`.
+ *
+ * `added` reads six fields off the *inside* of a recorded fact — a Harness's `cli`, a Handoff's
+ * `satisfies`, a Gate decision's `kind`, a Halt's `reason` and `gateId`, a Delivery's `artifacts` — and
+ * every one of them was a dereference that could throw. `CLAUDE.md` states the rule this repairs: a
+ * reading is part of the non-throwing contract, and anything it dereferences is read as `unknown`
+ * first. `delegationAnsweredBy` already did this on the Command side; the Event side was missed, and
+ * `runtime/mission-store.ts` had declared it as a Gap before anything tripped over it.
+ *
+ * It matters because a fact reaches a reading through `load`, and the store deliberately does not
+ * judge what it read — ADR 0009. So a hand-edited line, a file recovered from a torn tail, or a
+ * deserialiser somewhere upstream can hand `stepsOf` an Event whose shape no rule ever checked.
+ *
+ * Answers `undefined` rather than throwing, and each caller says something truthful about the absence
+ * rather than inventing a value. `event.kind` itself is never read this way: the switch is what
+ * selected the branch, so it is the one field a branch knows it has.
+ */
+function fieldIn(value: unknown, named: string): unknown {
+  if (typeof value === "object" && value !== null && named in value) {
+    return value[named as keyof typeof value];
+  }
+  return undefined;
+}
+
+/** A string property of an unvalidated value, or `undefined` when it is absent or is not one. */
+function textIn(value: unknown, named: string): string | undefined {
+  const read = fieldIn(value, named);
+  return typeof read === "string" ? read : undefined;
+}
+
+/** How long a list property of an unvalidated value is, or `undefined` when there is no list there. */
+function sizeIn(value: unknown, named: string): number | undefined {
+  const read = fieldIn(value, named);
+  return Array.isArray(read) ? read.length : undefined;
 }
 
 /** `1 Clause`, `2 Clauses`, `no Gap` — a count a human reads, without a bare zero. */
