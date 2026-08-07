@@ -1870,6 +1870,55 @@ caught it was a **vacuity guard** on the scan (`expect(specifiers.length).toBeGr
 it the check would have passed while examining six of eleven imports. Every scan that counts something
 gets a floor on the count.
 
+### An atom is not a lock, and the door is what makes reading free
+
+`load → submit → append` could not be held by wrapping the `MissionStore`: a wrapper sees two calls with
+nothing between them, and a lock taken at `load` deadlocks every reader that never appends — the driver
+polling for a Handoff, `delegationUnder`, every new WebSocket rendering. So the atom is **one call**
+(`MissionWriter.record`) and `load` is a relay with no queue at all.
+
+What that buys is precise, and worth stating in both directions: every **Decision** is made against the
+state as it is, while a caller's **choice** of Command can still be stale — the engine refuses it, and a
+Surface that stops on its own Refusal is already the rule. What is unrepresentable afterwards is an
+*accepted* Decision made against a state that had already moved. That was the bug, and its worst case was
+money: two accruals decided against one stale total were both compared against the Cap, so a Mission
+commissioned work past it.
+
+Three consequences that generalise:
+
+- **Make the safe construction the only easy one.** `missionWriter` memoises per store, so a second queue
+  cannot be created by asking twice, and the one unsafe construction that remains — two stores over one
+  Workspace, i.e. two processes — is named and kept as a **test's control arm** rather than as a sentence.
+  Handing the door out on `RunningCockpit` is the same move: the alternative a caller had was building its
+  own store, which was the bug.
+- **Remove the collaborator that allows the bug.** The three writers take a writer *in place of* the store,
+  and the writer has no `append`. A door beside an open window is not a door.
+- **When two orders of one race are both defects, assert what they share.** The two-writer control cannot
+  know which append lands first: one order commissions work past the Cap, the other makes `evolve` drop an
+  accepted Decision. Pinning either one pins this host's timing.
+
+### A shim is only evidence if it is faithful exactly where the code is fragile
+
+`attach` had been declared untestable because `jsdom` is absent, and the whole click-to-Command wire could
+be severed with 1078 tests green. A hand-written shim closes that under one condition: **it carries no
+judgement of its own.** It parses the markup the renderers really emitted, delivers events to the listeners
+really registered, records what was sent — and every assertion about *meaning* compares against the
+module's own exported pure functions (`answerFor`, `keystrokesOf`, `ACTIONS`), never against a frame the
+test spelled out.
+
+Two mechanics turned it from scaffolding into evidence. A **count guard**: the raw markup's `data-*`
+occurrences are counted against the parsed tree with a floor on the number, or every test below could pass
+over an empty tree. And **faithfulness where the code is fragile**: HTML lowercases attribute names, and
+implementing that found a live defect — the Kill control carried its PaneId as `data-value-paneId`, which a
+browser exposes as `valuePaneid`, so the control would have sent `paneId: ""`, which `protocol.ts` refuses
+and the server answers by closing the connection. Every existing test agreed with the markup instead of
+with a browser, because nothing here parsed HTML.
+
+The durable rule underneath it: **do not depend on a browser behaviour no test in this repository can
+check.** `data-value="paneId"` depends on none; `data-value-paneId` depended on one. This is the third
+defect in this repo found by a plant rather than by reading, and the first found by making a double
+*stricter* rather than looser.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without

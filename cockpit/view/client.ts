@@ -47,10 +47,14 @@
  *
  * Everything that decides anything is a function of its arguments: the terminal fold, the Cockpit fold,
  * every `render*`, `answerFor`, `keystrokesOf`, `brl`. `attach` is the only function that touches the
- * DOM or a socket, it holds no judgement, and it is **not executed by any test** — see the Gap at the
- * foot of this file. That split is deliberate: no DOM implementation is installed in this repository
- * (`jsdom` is absent), so the choice was between logic a test can drive and logic a test cannot, and the
- * logic is all on this side of the line.
+ * DOM or a socket and it holds no judgement. That split is deliberate: no DOM implementation is installed
+ * in this repository (`jsdom` is absent), so the choice was between logic a test can drive and logic a
+ * test cannot, and the logic is all on this side of the line.
+ *
+ * `attach` **is** executed now, over the markup the renderers really produce, under the small DOM
+ * `client.test.ts` argues for at length ("A DOM small enough to be honest"). What that closes is the hole
+ * QA measured: the one line that turns a click into a frame could be deleted and every test stayed green.
+ * What it does not close is a browser — see the Gap at the foot of this file.
  *
  * ## The rule this file may not break
  *
@@ -896,22 +900,71 @@ function exhausted(_value: never): void {
  * the server sent already says.
  * ============================================================================================== */
 
-/** The Gate this Mission is stopped at, or `undefined` when a Gate is not what stopped it. */
+/**
+ * The Gate this Mission is stopped at, or `undefined` when a Gate is not what stopped it.
+ *
+ * **The Halt is read as `unknown`**, like the Gate list beside it and like `renderEntry` reads a Refusal.
+ * A Mission arrives here off a socket, and the server folded it from a file `runtime/mission-store.ts`
+ * deliberately does not judge (ADR 0009) — so a `mission-halted` fact whose `halt` was lost folds cleanly
+ * to `{ status: "halted", halt: null }` and reaches this function. Dereferencing `state.halt.reason` threw
+ * `TypeError` **inside the socket's `message` handler**, where nothing catches it: the Cockpit then drew
+ * nothing at all, for that frame and every later one, and said nothing about why. That was BUG-2, and it is
+ * the same defect the engine closed in `added()` (`engine/domain/replay.ts`) for the same fact.
+ *
+ * The answer to a Halt nobody can read is **nothing to offer**, never a plausible default: a Halt whose
+ * reason was lost must not read as a Cap, because that is a different fact and it sends a human to the
+ * wrong remedy. The rest of the Cockpit — the bar, the Meter, the Panes, the record — draws.
+ *
+ * Every condition stays inline in its `if`, because TypeScript does not narrow through an aliased compound
+ * condition that uses `in`.
+ */
 export function haltingGate(state: Mission | undefined): Gate | undefined {
-  if (state === undefined || state.status !== "halted" || state.halt.reason !== "gate-open") {
+  if (state === undefined || state.status !== "halted") {
     return undefined;
   }
-  const wanted = state.halt.gateId;
+  const halt: unknown = state.halt;
+  if (
+    typeof halt !== "object" ||
+    halt === null ||
+    !("reason" in halt) ||
+    halt.reason !== "gate-open"
+  ) {
+    return undefined;
+  }
+  // A Halt that says it is a Gate and names none is a Gate this view cannot offer an answer to: the
+  // Command carries a GateId, and inventing one would answer a question nobody asked.
+  const wanted: unknown = "gateId" in halt ? halt.gateId : undefined;
   const gates: unknown = state.gates;
-  if (!Array.isArray(gates)) {
+  if (typeof wanted !== "string" || !Array.isArray(gates)) {
     return undefined;
   }
-  return (gates as readonly Gate[]).find((gate) => gate.id === wanted);
+  // And the **elements** as `unknown` too: guarding the list and then dereferencing what is in it is the
+  // half of this rule that is easy to miss. A `find` callback reading `gate.id` off a list holding `null`
+  // throws in the same place, for the same reason.
+  const held: readonly unknown[] = gates;
+  for (const gate of held) {
+    if (typeof gate === "object" && gate !== null && "id" in gate && gate.id === wanted) {
+      return gate as Gate;
+    }
+  }
+  return undefined;
 }
 
-/** Whether this Mission is stopped at its Cap, which is what an authorisation answers. */
+/**
+ * Whether this Mission is stopped at its Cap, which is what an authorisation answers.
+ *
+ * The Halt is read as `unknown` for the reason `haltingGate` states above. The equality is what keeps the
+ * answer truthful: a Halt whose reason was lost is not a Cap, so this says `false` and the view offers
+ * nothing rather than an Authorisation for a Mission that may be waiting on something else entirely.
+ */
 export function stoppedAtCap(state: Mission | undefined): boolean {
-  return state !== undefined && state.status === "halted" && state.halt.reason === "cap-reached";
+  if (state === undefined || state.status !== "halted") {
+    return false;
+  }
+  const halt: unknown = state.halt;
+  return (
+    typeof halt === "object" && halt !== null && "reason" in halt && halt.reason === "cap-reached"
+  );
 }
 
 /**
@@ -935,7 +988,19 @@ export function delegationFor(state: Mission | undefined, paneId: string): Deleg
   if (!Array.isArray(delegations)) {
     return undefined;
   }
-  return (delegations as readonly Delegation[]).find((delegation) => delegation.id === paneId);
+  // The elements as `unknown` as well — see `haltingGate` for why the list alone is not enough.
+  const held: readonly unknown[] = delegations;
+  for (const delegation of held) {
+    if (
+      typeof delegation === "object" &&
+      delegation !== null &&
+      "id" in delegation &&
+      delegation.id === paneId
+    ) {
+      return delegation as Delegation;
+    }
+  }
+  return undefined;
 }
 
 /** The CLI a Pane's Delegation resolved to, or `undefined` when there is no Delegation to read. */
@@ -1180,14 +1245,23 @@ export function renderMission(cockpit: Cockpit): string {
   }
 
   const meter = cockpit.meter;
+  // Read as `unknown`, for the reason `haltingGate` states: this Mission was folded from a file nothing
+  // judged, and `delegations.length` off a fact that lost its list would throw in the socket listener and
+  // take the whole Cockpit down with it. A list nobody can read is not "0 delegations", which would be a
+  // number in front of a human that no rule computed.
+  const delegations: unknown = state.delegations;
+  const made = Array.isArray(delegations) ? delegations.length : undefined;
   const bar =
     `<div class="bar">` +
     pill(state.status, statusTone(state.status)) +
     `<h1 class="briefing">${escapeHtml(String(state.briefing))}</h1>` +
     `<span class="mode">${escapeHtml(String(state.mode))}</span>` +
     (meter === undefined ? "" : renderMeter(meter)) +
-    `<span class="count">${state.delegations.length} delegation` +
-    `${state.delegations.length === 1 ? "" : "s"}</span>` +
+    `<span class="count">` +
+    (made === undefined
+      ? "a delegation list this Mission does not carry"
+      : `${made} delegation${made === 1 ? "" : "s"}`) +
+    `</span>` +
     `</div>`;
 
   return bar + renderAnswers(cockpit);
@@ -1268,7 +1342,10 @@ export function renderPane(cockpit: Cockpit, pane: PaneReading): string {
     `<span class="zord">${escapeHtml(pane.paneId)}</span>` +
     `<span class="provider">${provider === undefined ? "provider unattributed" : escapeHtml(provider)}</span>` +
     `<span class="cost">${spent === undefined ? "—" : escapeHtml(brl(spent))}</span>` +
-    `<button type="button" data-action="kill-pane" data-value-paneId="${escapeHtml(pane.paneId)}">Kill</button>` +
+    // The PaneId travels as the **value** of a `data-value` box, exactly as the Gate's does, and not as
+    // part of an attribute *name*. See `valuesAround` for what the other spelling cost.
+    `<input type="hidden" data-value="paneId" value="${escapeHtml(pane.paneId)}">` +
+    `<button type="button" data-action="kill-pane">Kill</button>` +
     `</div>` +
     (pane.screen.title === "" ? "" : `<div class="title">${escapeHtml(pane.screen.title)}</div>`) +
     `<pre class="screen" id="screen-${pane.ordinal}" tabindex="0">${htmlOfScreen(pane.screen)}</pre>` +
@@ -1298,6 +1375,18 @@ export function renderRecord(cockpit: Cockpit): string {
 export function renderEntry(entry: ReplayEntry): string {
   const kind: unknown = entry.command?.kind;
   const intent = typeof kind === "string" ? kind : "an unreadable Command";
+
+  // The Decision itself, before either branch reads its payload: `entry.decision.kind` off an entry that
+  // lost its Decision throws exactly where the Halt did. Everything after this guard is the typed
+  // reading, because the entry has now said which member it is.
+  const decided: unknown = entry.decision;
+  if (typeof decided !== "object" || decided === null || !("kind" in decided)) {
+    return (
+      `<div class="entry">` +
+      `<span class="intent">${escapeHtml(intent)}</span>` +
+      `<span class="verdict">an unreadable Decision</span></div>`
+    );
+  }
 
   if (entry.decision.kind === "refused") {
     const refusal = entry.decision.refusal;
@@ -1470,10 +1559,26 @@ export function attach(cockpit: Cockpit, wiring: Wiring): (said: ToCockpit) => v
 }
 
 /**
- * The values a control's answer needs: its own `data-value-*`, and the boxes in the block it sits in.
+ * The values a control's answer needs: the boxes in the block it sits in.
  *
- * Reading the block rather than a form because the two answers are two blocks, and a `<form>` would
- * bring a submit event and a page navigation this page has no use for.
+ * Reading the block rather than a form because the answers are blocks, and a `<form>` would bring a
+ * submit event and a page navigation this page has no use for. A value is named by the **content** of a
+ * `data-value` attribute and never by part of an attribute's own name — one mechanism, for every answer,
+ * and the reason is a browser behaviour nothing in this repository can test.
+ *
+ * ## What the second spelling cost, kept because it is the kind of thing that comes back
+ *
+ * A control used to carry its own value as `data-value-paneId="p"`, read back out of `dataset`. **An HTML
+ * parser lowercases attribute names**, so the attribute a browser holds is `data-value-paneid`, its
+ * `dataset` key is `valuePaneid`, and the name this function derived was `paneid` — which `answerFor`
+ * does not read. The Kill control would have sent `{ kind: "pane-write"… paneId: "" }`, which
+ * `protocol.ts` refuses as unreadable and the server answers by closing the connection. Every test in
+ * this repository agreed with the markup rather than with a browser, because nothing here parses HTML.
+ *
+ * There is no DOM to settle it with, and that is exactly the argument: **the view must not depend on a
+ * browser behaviour no test here can check.** The `data-value` spelling depends on none — the name is a
+ * value, and values keep their case everywhere. The `data-value-*` branch is gone rather than fixed,
+ * because nothing emits one now and a branch nothing reaches is a guard that rots.
  */
 function valuesAround(button: HTMLElement): Readonly<Record<string, string>> {
   const values: Record<string, string> = {};
@@ -1484,12 +1589,6 @@ function valuesAround(button: HTMLElement): Readonly<Record<string, string>> {
       if (name !== undefined) {
         values[name] = field.value;
       }
-    }
-  }
-  for (const [name, value] of Object.entries(button.dataset)) {
-    if (name.startsWith("value") && name !== "value" && typeof value === "string") {
-      const key = name.slice("value".length);
-      values[key.charAt(0).toLowerCase() + key.slice(1)] = value;
     }
   }
   return values;
@@ -1533,10 +1632,17 @@ function valuesAround(button: HTMLElement): Readonly<Record<string, string>> {
  *    this task's scope names two. A Mission stopped at its Cap whose human does **not** want to spend
  *    more therefore has no answer in this view; the Command exists in the engine and the gesture is four
  *    lines. Recorded as a finding rather than added, because scope is the contract.
- * 5. **`attach` is not executed by a test.** `jsdom` is not installed in this repository and
- *    `package.json` is outside this task's scope, so there is no DOM to drive. Everything it decides is
- *    a pure function above it with its own test; what is unproven is the wiring — that the click
- *    listener finds the button, that the values come off the right boxes, that the region ids match the
- *    markup. Installing `jsdom` and driving `attach` is the first thing to do when a dependency may be
- *    added.
+ * 5. **`attach` is executed by a test, and not by a browser.** ~~`attach` is not executed by a test~~ —
+ *    that Gap was real and QA proved it with a plant: severing the one line that sends a click's gesture
+ *    left every test green. It is closed by the shim `client.test.ts` builds, which parses the markup the
+ *    renderers emit and delivers events to the listeners `attach` really registers, and every assertion
+ *    about *meaning* is made against this module's own `answerFor`, `keystrokesOf` and `ACTIONS`. So the
+ *    wiring is proven: the click listener finds the control, the values come off the boxes in its block,
+ *    the region ids match the markup, and a keypress reaches the Pane it was typed into.
+ *
+ *    What is still unproven is the vendor's half — that a browser's `closest`, `dataset` and event
+ *    dispatch behave as read, that `innerHTML` parses this markup the same way, that anything is laid out
+ *    or painted. `jsdom` is not installed and `package.json` is outside this task's scope; the shim is
+ *    what a test can have today, and it earned its keep on its first run by finding the `data-value-*`
+ *    reading `valuesAround` now records.
  */

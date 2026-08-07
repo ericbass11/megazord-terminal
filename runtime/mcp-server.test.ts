@@ -61,6 +61,7 @@ import {
 
 import { cortexStore, type CortexStore } from "./cortex-store";
 import { missionStore, type MissionStore } from "./mission-store";
+import { missionWriter } from "./mission-writer";
 import { paneManager, paneId, type PaneId, type PaneManager } from "./pane-manager";
 import { inheritedEnv } from "./pty-agent-runner";
 
@@ -197,7 +198,9 @@ function planeOver(label: string, overrides: Overrides = {}): Built {
     missionId: MISSION,
     zordId: overrides.zordId ?? BUILDER,
     workspace: root,
-    store,
+    // The store is what this test seeds and reads the file back through; the control plane is handed the
+    // one door over it — `load → submit → append` as one atom. See `runtime/mission-writer.ts`.
+    writer: missionWriter({ store }),
     panes,
     cortex,
     runner,
@@ -1270,7 +1273,7 @@ describe("type-level guarantees", () => {
       missionId: MISSION,
       zordId: BUILDER,
       workspace: root,
-      store: missionStore({ workspace: root }),
+      writer: missionWriter({ store: missionStore({ workspace: root }) }),
       panes: paneManager({ env: ENV, idleAfterMs: 400 }),
       cortex: cortexStore({ workspace: root }),
       runner: fakeAgentRunner([]),

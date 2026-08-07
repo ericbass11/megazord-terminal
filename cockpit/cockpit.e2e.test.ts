@@ -85,6 +85,7 @@ import type { ToCockpit } from "./protocol";
 import { drive, type Combination, type DriveOptions, type RosterEntry } from "../runtime/combination-driver";
 import { controlPlane, type ControlPlane } from "../runtime/mcp-server";
 import { missionStore, type MissionStore } from "../runtime/mission-store";
+import { missionWriter, type MissionWriter } from "../runtime/mission-writer";
 import type { PaneManager } from "../runtime/pane-manager";
 import { cortexStore } from "../runtime/cortex-store";
 import { inheritedEnv, ptyAgentRunner } from "../runtime/pty-agent-runner";
@@ -455,9 +456,10 @@ describe("criterion 5 — one Briefing drives real processes to a Delivery", () 
     const now = clockFrom(Date.parse("2026-08-06T11:00:00.000Z"));
     const cockpit = await cockpitOn(workspace, { now });
 
-    // The drive's own store: a second instance over the same Workspace, so the channel between the Core
-    // and its Zords is the file and nothing else. Exactly what the driver's tests do, for the same reason.
-    const store = missionStore({ workspace });
+    // The drive writes through the **Cockpit's own door**, which is what `RunningCockpit.writer` is for: a
+    // store of its own would be a second queue over one file, which is the bug this A/B below still pins.
+    // The channel between the Core and its Zords is still the file and nothing else — reading is free, and
+    // every gesture of the drive, the server and the control plane is ordered against the other two.
     const runner = ptyAgentRunner({
       cwd: workspace,
       env: {
@@ -479,7 +481,7 @@ describe("criterion 5 — one Briefing drives real processes to a Delivery", () 
       cap: moneyFromCents(10_000),
       core: CORE,
       combination: RECIPE,
-      store,
+      writer: cockpit.writer,
       runner,
       now,
       settleTimeoutMs: 2_000,
@@ -497,8 +499,12 @@ describe("criterion 5 — one Briefing drives real processes to a Delivery", () 
     });
     expect(answered.decision.kind).toBe("accepted");
 
-    // A fresh store, as if the app had been closed and `mz .` run again: the drive remembers nothing.
-    const resumed = await drive({ ...driving, store: missionStore({ workspace }) });
+    // A fresh door over a fresh store, as if the app had been closed and `mz .` run again: the drive
+    // remembers nothing, and the Mission is the file.
+    const resumed = await drive({
+      ...driving,
+      writer: missionWriter({ store: missionStore({ workspace }) }),
+    });
     expect(resumed.outcome).toEqual({ kind: "delivered" });
 
     /* --- and now the record, read back through a store nothing above ever held --- */
@@ -719,7 +725,7 @@ describe("the control plane's mount", () => {
     const workspace = temporary();
     const server = await cockpitServer({
       missionId: MISSION,
-      store: missionStore({ workspace }),
+      writer: missionWriter({ store: missionStore({ workspace }) }),
       panes: NO_PANES,
       view: "<!doctype html>",
     });
@@ -739,21 +745,37 @@ describe("the control plane's mount", () => {
 });
 
 /* -------------------------------------------------------------------------------------------------
- * Finding: two writers on one Mission file are not ordered
+ * One door to the Mission file — BUG-1, and the A/B that keeps the fix measurable
+ *
+ * This was a *pin*: two tests that asserted the lost update, written to go red the day it was fixed. It
+ * is fixed — `runtime/mission-writer.ts` — so the assertion is now the other way round, and the A/B
+ * shape is kept because it still says something true. One writer over a Workspace orders every gesture
+ * of every transport; two writers over one Workspace do not, and that second half is the bound the fix
+ * states rather than a defect it left behind.
+ *
+ * **What is asserted here and what is asserted elsewhere.** These two run the *composed* product, over
+ * real transports: a human at a WebSocket and a Zord at the control plane, which `bin/mz.ts` calls "real
+ * and ordinary" and which is the pair that bit. They are written around `open-mission`, whose Refusal
+ * does not depend on which of the two gestures reaches the queue first — so nothing here rests on a
+ * timing this test cannot control. The **expensive half** of the defect — an accrual that reaches the Cap
+ * and a Delegation commissioned past it — needs the two gestures in a *known* order, which no transport
+ * here can promise without a barrier holding one of them open. It is asserted in
+ * `runtime/mission-writer.test.ts`, where the two Commands are two `record` calls and the order is the
+ * call order.
  * ---------------------------------------------------------------------------------------------- */
 
 /**
- * One control plane, built the way `mz` builds one, over a store the caller keeps.
+ * One control plane, built the way `mz` builds one, over a door the caller keeps.
  *
  * Nothing about it is a double: this is `runtime/mcp-server.ts` with a process table and a runner nothing
  * ever calls, because `mission_create` touches neither.
  */
-function planeFor(zord: ZordId, workspace: string, store: MissionStore, now: () => Instant): ControlPlane {
+function planeFor(zord: ZordId, workspace: string, writer: MissionWriter, now: () => Instant): ControlPlane {
   return controlPlane({
     missionId: MISSION,
     zordId: zord,
     workspace,
-    store,
+    writer,
     panes: NO_PANES,
     cortex: cortexStore({ workspace }),
     runner: NEVER_RUN,
@@ -762,42 +784,81 @@ function planeFor(zord: ZordId, workspace: string, store: MissionStore, now: () 
   });
 }
 
-describe("Finding — two writers on one Mission file are not ordered", () => {
-  it("loses an update when two control planes decide against the same state", async () => {
+describe("one door to the Mission file", () => {
+  it("orders two Zords' control planes, so the second Decision is made against what the first recorded", async () => {
     const workspace = temporary();
-    const store = missionStore({ workspace });
+    // One store, one writer, two control planes: exactly the pair `mz` composes, and `missionWriter` would
+    // answer this same writer to anybody else who asked for it over this store.
+    const writer = missionWriter({ store: missionStore({ workspace }) });
     const now = clockFrom(Date.parse("2026-08-06T11:00:00.000Z"));
 
-    // Two Zords, two control planes, two queues, one file: exactly the pair `mz` composes.
-    const speaking = [SCOUT, BUILDER].map((zord) => planeFor(zord, workspace, store, now));
+    const speaking = [SCOUT, BUILDER].map((zord) => planeFor(zord, workspace, writer, now));
     const [first, second] = await Promise.all(speaking.map((plane) => opening(plane)));
 
-    // Both Decisions were **accepted**, and only one Mission was opened. One of the two is therefore an
-    // accepted Decision the fold drops on the floor, which is what `CLAUDE.md` names as breaking the one
-    // property this design exists for.
-    expect([first, second]).toEqual(["accepted", "accepted"]);
+    // Which of the two won the queue is not this test's business — that one of them lost is. Before the
+    // fix both were accepted, so the file carried an accepted Decision the fold drops on the floor.
+    expect([first, second].sort()).toEqual(["accepted", "refused"]);
 
+    const store = missionStore({ workspace });
     const replay = await store.load(MISSION);
     expect(replay).toHaveLength(2);
     expect(stepsOf(replay).map((step) => step.command.kind)).toEqual(["open-mission", "open-mission"]);
-    expect(eventsIn(stepsOf(replay), "mission-opened")).toHaveLength(2);
-    expect(refusedIn(stepsOf(replay))).toEqual([]);
+    // One Mission was opened, and the record says so — once as a fact, once as a Refusal.
+    expect(eventsIn(stepsOf(replay), "mission-opened")).toHaveLength(1);
+    expect(refusedIn(stepsOf(replay))).toHaveLength(1);
+    expect(refusedIn(stepsOf(replay))[0]?.decision.refusal.reason).toBe("illegal-transition");
     expect(stateOf(replay).status).toBe("running");
   });
 
-  it("does not lose it when the two gestures share one queue, which is the shape of the fix", async () => {
-    // The control, and it is what makes the test above evidence rather than a description of concurrency.
-    // Same two concurrent gestures, same store, same Mission — through **one** control plane, whose queue
-    // is what a `runtime/mission-writer.ts` would give all three writers. The second is refused, because
-    // it is decided against a Mission that had already been opened.
+  it("orders a human at the WebSocket against a Zord at the control plane, on the Cockpit mz composes", async () => {
     const workspace = temporary();
-    const store = missionStore({ workspace });
-    const alone = planeFor(SCOUT, workspace, store, clockFrom(Date.parse("2026-08-06T11:00:00.000Z")));
+    const now = clockFrom(Date.parse("2026-08-06T11:30:00.000Z"));
+    // The whole program: one `startCockpit`, whose server and control planes share one door. Nothing here
+    // reaches past a transport — one gesture is a WebSocket frame and the other is a POST.
+    const cockpit = await cockpitOn(workspace, { now });
 
-    const [first, second] = await Promise.all([opening(alone), opening(alone)]);
+    const [human, zord] = await Promise.all([
+      gestureOn(cockpit, {
+        kind: "submit",
+        command: {
+          kind: "open-mission",
+          occurredAt: now(),
+          missionId: MISSION,
+          briefing: BRIEFING,
+          mode: "combination",
+          cap: moneyFromCents(5_000),
+          core: CORE,
+        },
+      }).then((entry) => entry.decision.kind),
+      opening(`${cockpit.controlUrl}/scout`),
+    ]);
 
-    expect([first, second]).toEqual(["accepted", "refused"]);
-    expect(refusedIn(stepsOf(await store.load(MISSION)))).toHaveLength(1);
+    expect([human, zord].sort()).toEqual(["accepted", "refused"]);
+
+    const replay = await missionStore({ workspace }).load(MISSION);
+    expect(eventsIn(stepsOf(replay), "mission-opened")).toHaveLength(1);
+    expect(refusedIn(stepsOf(replay))).toHaveLength(1);
+  });
+
+  it("does not order two stores over one Workspace, which is the bound the fix states", async () => {
+    // The control, and it is what makes the two tests above evidence rather than a description of
+    // concurrency. Two `missionStore` instances are two doors, because a writer's identity is its store's
+    // — and two *processes* are the same thing seen from outside. Both Decisions are accepted, one Mission
+    // is opened, so the file carries an accepted Decision that folds to nothing: precisely the lost update
+    // BUG-1 was. Nothing in one process can see the second store, and **one Cockpit per Workspace** is the
+    // assumption `mz` meets by construction — `runtime/mission-writer.ts` says so where it can be read.
+    const workspace = temporary();
+    const now = clockFrom(Date.parse("2026-08-06T12:00:00.000Z"));
+    const doors = [SCOUT, BUILDER].map((zord) =>
+      planeFor(zord, workspace, missionWriter({ store: missionStore({ workspace }) }), now),
+    );
+
+    const [first, second] = await Promise.all(doors.map((plane) => opening(plane)));
+
+    expect([first, second]).toEqual(["accepted", "accepted"]);
+    const replay = await missionStore({ workspace }).load(MISSION);
+    expect(eventsIn(stepsOf(replay), "mission-opened")).toHaveLength(2);
+    expect(refusedIn(stepsOf(replay))).toEqual([]);
   });
 });
 
@@ -876,24 +937,34 @@ function namesIn(answered: unknown): readonly string[] {
   return listed.tools.map((tool) => tool.name);
 }
 
-/** Opens the Mission through one Zord's control plane, and says how the domain answered. */
-async function opening(plane: ControlPlane): Promise<string> {
-  const answered = await plane.handle(
-    JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: {
-        name: "mission_create",
-        arguments: {
-          briefing: "two writers, one file",
-          mode: "combination",
-          capCents: 5_000,
-          capabilities: ["delegate"],
-        },
+/**
+ * Opens the Mission as a Zord does, and says how the domain answered.
+ *
+ * Takes a control plane **or** the URL of one mounted on a Cockpit: the frame is identical either way,
+ * which is the point — `runtime/mcp-server.ts` is a protocol and no transport, so a test that drives it
+ * directly and one that POSTs to it are asking the same thing of the same code.
+ */
+async function opening(at: ControlPlane | string): Promise<string> {
+  const frame = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "mission_create",
+      arguments: {
+        briefing: "one file, and whoever gets to it first",
+        mode: "combination",
+        capCents: 5_000,
+        capabilities: ["delegate"],
       },
-    }),
-  );
+    },
+  };
+
+  if (typeof at === "string") {
+    return decisionIn(await frameTo(at, frame));
+  }
+
+  const answered = await at.handle(JSON.stringify(frame));
   if (answered === undefined) {
     throw new Error("mission_create answered nothing");
   }

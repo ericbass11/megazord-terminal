@@ -59,6 +59,7 @@ import {
 } from "@engine/index";
 
 import { missionStore, type MissionStore } from "../runtime/mission-store";
+import { missionWriter } from "../runtime/mission-writer";
 import { UnknownPaneError, type PaneId, type PaneManager, type PaneStatus } from "../runtime/pane-manager";
 
 import { cockpitServer, type CockpitServer, type CockpitServerOptions } from "./server";
@@ -164,16 +165,19 @@ function recordedPanes(): RecordedPanes {
 
 /** A Cockpit over a fresh Workspace, on an ephemeral port, closed for you afterwards. */
 async function cockpit(
-  over: Partial<CockpitServerOptions> = {},
+  over: Partial<CockpitServerOptions> & { readonly store?: MissionStore } = {},
 ): Promise<{ server: CockpitServer; store: MissionStore; panes: RecordedPanes }> {
-  const store = over.store ?? missionStore({ workspace: workspace() });
+  // A store is what a test wants to read the file back through; the server is handed the **writer** over
+  // it, which is the one door `load → submit → append` goes through. See `runtime/mission-writer.ts`.
+  const { store: given, ...rest } = over;
+  const store = given ?? missionStore({ workspace: workspace() });
   const panes = recordedPanes();
   const server = await cockpitServer({
     missionId: MISSION,
-    store,
+    writer: missionWriter({ store }),
     panes,
     view: VIEW,
-    ...over,
+    ...rest,
   });
   started.push(server);
   bound.push(server.port);
@@ -1184,7 +1188,7 @@ describe("the boundary", () => {
     const specifiers = statements.map(([, specifier]) => specifier);
 
     expect([...specifiers].sort()).toEqual([
-      "../runtime/mission-store",
+      "../runtime/mission-writer",
       "../runtime/pane-manager",
       "./protocol",
       "@engine/index",
@@ -1197,8 +1201,8 @@ describe("the boundary", () => {
     // Contract, and this was settled in review after two `runtime/` modules did it.
     expect(specifiers.every((specifier) => !specifier.startsWith("@engine/domain"))).toBe(true);
     // Both runtime imports are type-only, so this module requires no `node-pty` and opens no file of its
-    // own: the process table and the store are handed in.
-    for (const specifier of ["../runtime/pane-manager", "../runtime/mission-store"]) {
+    // own: the process table and the writer are handed in.
+    for (const specifier of ["../runtime/pane-manager", "../runtime/mission-writer"]) {
       const statement = statements.find(([, named]) => named === specifier);
       expect(statement?.[0].startsWith("import type ")).toBe(true);
     }
@@ -1245,22 +1249,22 @@ describe("the type level", () => {
     expect(Object.isFrozen(server)).toBe(true);
   });
 
-  it("requires the view, the Mission, the store and the process table", async () => {
-    const store = missionStore({ workspace: workspace() });
+  it("requires the view, the Mission, the writer and the process table", async () => {
+    const writer = missionWriter({ store: missionStore({ workspace: workspace() }) });
     const panes = recordedPanes();
 
     const viewless = (): Promise<CockpitServer> =>
       // @ts-expect-error — `view` has no default: a placeholder built into the server is a second view
       // that would eventually ship, competing with cockpit/view/.
-      cockpitServer({ missionId: MISSION, store, panes });
+      cockpitServer({ missionId: MISSION, writer, panes });
     const missionless = (): Promise<CockpitServer> =>
       // @ts-expect-error — the envelope carries no MissionId, so this is what says which file a gesture
       // is recorded in.
-      cockpitServer({ store, panes, view: VIEW });
+      cockpitServer({ writer, panes, view: VIEW });
     const hosted = (): Promise<CockpitServer> =>
       cockpitServer({
         missionId: MISSION,
-        store,
+        writer,
         panes,
         view: VIEW,
         // @ts-expect-error — there is no host option, deliberately. See "Who may connect".
@@ -1270,15 +1274,27 @@ describe("the type level", () => {
     expect([viewless, missionless, hosted].every((build) => typeof build === "function")).toBe(true);
   });
 
-  it("takes a MissionId and not any string", async () => {
+  it("takes the door and not the store, so no gesture can be written around the queue", async () => {
     const store = missionStore({ workspace: workspace() });
+    const panes = recordedPanes();
+
+    const storeless = (): Promise<CockpitServer> =>
+      // @ts-expect-error — a `MissionStore` is not a `MissionWriter`: it has an `append` and no `record`,
+      // and a server that could append would decide against a Replay it loaded itself. That is BUG-1.
+      cockpitServer({ missionId: MISSION, store, panes, view: VIEW });
+
+    expect(typeof storeless).toBe("function");
+  });
+
+  it("takes a MissionId and not any string", async () => {
+    const writer = missionWriter({ store: missionStore({ workspace: workspace() }) });
     const panes = recordedPanes();
 
     const loose = (): Promise<CockpitServer> =>
       cockpitServer({
         // @ts-expect-error — the brand is what keeps a ZordId out of the file a Mission is recorded in.
         missionId: "mission-cockpit",
-        store,
+        writer,
         panes,
         view: VIEW,
       });

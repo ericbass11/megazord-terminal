@@ -146,7 +146,8 @@
  * ## The Mission half is the Cockpit's, with one difference and one divergence
  *
  * `handoff_submit`, `mission_create` and the accrual `agent_invoke` makes all take the same path
- * `cockpit/server.ts` takes: load the Replay off the disk, `submit`, append, answer the entry **verbatim**.
+ * `cockpit/server.ts` takes, and now literally the same code: `MissionWriter.record` — load the Replay off
+ * the disk, `submit`, append — and answer the entry **verbatim**.
  * No state is held: the Mission is the file, and every gesture re-folds it. A Refusal is **data** — it
  * comes back as the entry it is, with its violations, and `isError` stays `false`, because the tool did
  * what it was asked and the domain answered. That loop — refused, told what broke, submit again — is
@@ -159,14 +160,15 @@
  * Replay, while one that merely breaks its Contract leaves a refused one. An unbuildable Handoff never
  * became an intent; a Contract-violating one did.
  *
- * **The divergence, declared loudly:** this module appends **every** entry, refused as well as accepted.
- * `cockpit/server.ts` appends only accepted ones. The glossary is not ambiguous — a Replay is "every
- * Command it was given and what the domain answered, the accepted Events **and the Refusals alike**" —
- * `mission-store.ts` designs `load` around refused entries being in the file, and `refusedIn` is a reader
- * the engine ships that a persisted Replay could otherwise never satisfy. Folded state is identical either
- * way, because `eventsOf` skips a refused Decision; what changes is whether the audit surface survives
- * being written down. The two layers must not disagree about this, and the fix belongs in `server.ts`,
- * which is not this task's to edit.
+ * **The divergence this module declared, and how it ended:** it appends **every** entry, refused as well
+ * as accepted, and `cockpit/server.ts` shipped appending only accepted ones. The glossary is not ambiguous
+ * — a Replay is "every Command it was given and what the domain answered, the accepted Events **and the
+ * Refusals alike**" — `mission-store.ts` designs `load` around refused entries being in the file, and
+ * `refusedIn` is a reader the engine ships that a persisted Replay could otherwise never satisfy. Folded
+ * state is identical either way, because `eventsOf` skips a refused Decision; what changes is whether the
+ * audit surface survives being written down. The Gap was declared rather than quietly matched, `server.ts`
+ * was corrected, and both now take the same path — one that neither of them writes any more, because
+ * `MissionWriter.record` is where those three steps live.
  *
  * ## `agent_invoke` is smaller than it looks, and the reason is the Core
  *
@@ -206,10 +208,12 @@
  * 3. **A Pane opened before this control plane existed is invisible to it.** Nothing is buffered for a
  *    late listener, so `pane_read` and `pane_write` answer a tool error for it. Build the control plane
  *    before spawning, which is what the Cockpit server already does for the same reason.
- * 4. **Two writers on one Mission file are not ordered.** Every `submit` here passes through one queue, so
- *    this control plane cannot lose an update to itself; a Cockpit server and a control plane in one
- *    process are two queues over one file, and Task 9 mounts both. The lost update is real and it belongs
- *    to whoever composes them.
+ 4. **Two *stores* over one Workspace are still not ordered.** ~~Two writers on one Mission file are not
+ *    ordered~~ — that was this module's Gap and it is **closed**: `load → submit → append` is one atom in
+ *    `runtime/mission-writer.ts`, and the Cockpit's server, every control plane and every drive over a
+ *    Workspace share one writer. What is left is what no module in one process can see: a second
+ *    `missionStore` over the same directory, or a second process. One Cockpit per Workspace is the
+ *    assumption `mz` meets by construction.
  * 5. **A Pane runs in the Workspace root, never a subdirectory.** Accepting a relative path needs
  *    containment logic — resolve, compare, refuse an escape — and a containment check that is subtly wrong
  *    is worse than not offering the field.
@@ -239,7 +243,6 @@ import {
   moneyFromCents,
   orchestrationCapability,
   stateOf,
-  submit,
   type AgentRunner,
   type ClauseId,
   type DelegationId,
@@ -258,7 +261,7 @@ import {
 
 // Type-only: this module requires no `node-pty`, so it loads on a machine with no native toolchain.
 import type { PaneId, PaneManager, PaneStatus } from "./pane-manager";
-import type { MissionStore } from "./mission-store";
+import type { MissionWriter } from "./mission-writer";
 // `subjectsIn` is the one value imported from a sibling, because tallying subjects a second way here
 // would be the second derivation BUG-3 was fixed into having none of.
 import { subjectsIn, type CortexStore, type Fact } from "./cortex-store";
@@ -546,8 +549,15 @@ export type ControlPlaneOptions = {
    * inside a Workspace, not wherever the process that hosts it happened to start.
    */
   readonly workspace: string;
-  /** Where the Replay lives. The Mission is that file, and nothing about it is cached here. */
-  readonly store: MissionStore;
+  /**
+   * The one door to the Mission's file. The Mission is that file, and nothing about it is cached here.
+   *
+   * A writer rather than a store: `record` is `load → submit → append` as one atom, shared with the
+   * Cockpit's server, every other control plane and any drive over the same Workspace. Before it, each
+   * control plane held a queue of its own, which ordered a Zord against itself and against nobody else —
+   * BUG-1, argued in full in `runtime/mission-writer.ts`.
+   */
+  readonly writer: MissionWriter;
   /** The live process table. A type only, so this module requires no `node-pty`. */
   readonly panes: PaneManager;
   /** The Workspace's Cortex. */
@@ -677,40 +687,25 @@ export function controlPlane(options: ControlPlaneOptions): ControlPlane {
    * The Mission, which is the file
    * ------------------------------------------------------------------------------------------ */
 
-  /** The one queue every `submit` passes through, in call order. The idiom `cockpit/server.ts` uses. */
-  let tail: Promise<void> = Promise.resolve();
-
-  function inTurn<TAnswer>(work: () => Promise<TAnswer>): Promise<TAnswer> {
-    const next = tail.then(work, work);
-    tail = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
-  }
-
   /**
    * One Command, decided by the engine and recorded.
    *
-   * Every line is the engine's or the store's: the Replay comes off the disk with no cache, `submit`
+   * Every line is the engine's or the writer's: the Replay comes off the disk with no cache, `submit`
    * decides against `stateOf` of it, and the entry is appended — **accepted or refused**, for the reason
    * the module doc argues at length. The entry goes back whole.
+   *
+   * There is no queue here any more. `MissionWriter.record` holds those three steps as one atom for every
+   * writer of the Workspace, and a second queue in front of it would order this control plane against
+   * itself twice while ordering it against nobody else — which is exactly the shape BUG-1 had.
    */
   async function record(command: MissionCommand): Promise<ReplayEntry> {
-    return inTurn(async () => {
-      const recorded = await options.store.load(options.missionId);
-      const next = submit(recorded, command);
-      // `submit` appends exactly one entry and never throws, so the last one is this Command's. The
-      // length is asserted in the test rather than assumed here.
-      const entry = next[next.length - 1];
-      await options.store.append(options.missionId, entry);
-      return entry;
-    });
+    const { entry } = await options.writer.record(options.missionId, command);
+    return entry;
   }
 
   /** The Delegation this Mission recorded under an id, or `undefined`. Folded, never cached. */
   async function delegationUnder(id: DelegationId): Promise<Delegation | undefined> {
-    const state = stateOf(await options.store.load(options.missionId));
+    const state = stateOf(await options.writer.load(options.missionId));
     if (!isOpened(state)) {
       return undefined;
     }

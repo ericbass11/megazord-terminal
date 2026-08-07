@@ -51,6 +51,7 @@ import {
 } from "@engine/index";
 
 import { missionStore } from "../runtime/mission-store";
+import { missionWriter } from "../runtime/mission-writer";
 import type { PaneId, PaneManager, PaneStatus } from "../runtime/pane-manager";
 
 import { cockpitServer, type CockpitServer } from "./server";
@@ -154,7 +155,8 @@ async function cockpit(recorded: Replay): Promise<CockpitServer> {
   }
   const server = await cockpitServer({
     missionId: MISSION,
-    store,
+    // The store is what this test seeds and reads back; the server is handed the one door over it.
+    writer: missionWriter({ store }),
     panes: recordedPanes(),
     view: await cockpitView(),
   });
@@ -479,7 +481,7 @@ describe("criterion 6, over the real server: a Gate halts the Mission and a huma
     }
     const server = await cockpitServer({
       missionId: MISSION,
-      store,
+      writer: missionWriter({ store }),
       panes: recordedPanes(),
       view: await cockpitView(),
     });
@@ -623,7 +625,7 @@ describe("a Pane's bytes reach the view", () => {
     const panes = recordedPanes();
     const server = await cockpitServer({
       missionId: MISSION,
-      store,
+      writer: missionWriter({ store }),
       panes,
       view: await cockpitView(),
     });

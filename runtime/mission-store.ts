@@ -69,9 +69,11 @@
  * that an Event belongs to the Mission it is folded into. The file name is this store's index, not a
  * claim verified against the entries; a hand-edited file that mixes two Missions folds nonsense, quietly.
  * A second Gap of the same family: the skeleton check guarantees an entry can be *read*, not that the
- * inside of a fact is well-formed — `added()` in `replay.ts` reads `event.harness.cli` off a `Delegated`
- * without reading it as `unknown` first, because an Event is a fact the engine itself wrote. A
- * hand-edited fact can still break that reading, and closing it belongs to whoever changes the rule.
+ * inside of a fact is well-formed. That burden is each reader's, and the two readers that had missed it
+ * are now fixed — `added()` in `replay.ts` (it read `event.harness.cli` off a `Delegated` without
+ * reading it as `unknown`) and `haltingGate`/`stoppedAtCap` in `cockpit/view/client.ts` (they read
+ * `state.halt.reason`, and the browser threw inside its socket listener). Whoever writes the next
+ * reading over a loaded fact owes it the same treatment; this store will not do it for them.
  *
  * ## A corrupt line is reported, never skipped
  *

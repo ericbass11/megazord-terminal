@@ -93,6 +93,7 @@ import {
   type RosterEntry,
 } from "./combination-driver";
 import { missionStore, type MissionStore } from "./mission-store";
+import { missionWriter, type MissionWriter } from "./mission-writer";
 import { controlPlane, type ControlPlane } from "./mcp-server";
 import type { CortexStore } from "./cortex-store";
 import type { PaneManager } from "./pane-manager";
@@ -246,9 +247,23 @@ const NEVER_INVOKED: AgentRunner = {
 
 type Bench = {
   readonly workspace: string;
-  /** The store the drive is given. */
+  /** The store behind the one door. What a test seeds and reads the file back through. */
   readonly store: MissionStore;
-  /** A second store over the same Workspace: everybody who is not the drive writes through this one. */
+  /**
+   * The door the drive and the Zord both go through.
+   *
+   * **One** writer for both, which is the fix for BUG-1: `load → submit → append` is one atom, so a
+   * Command the drive submits can no longer be decided against a Mission the Zord has already moved. It
+   * is `missionWriter({ store })`, and asking for it again with the same store answers the same writer.
+   */
+  readonly writer: MissionWriter;
+  /**
+   * A second store over the same Workspace: what a test writes with **directly**, outside every door.
+   *
+   * Used only where the point is a log no gesture could have produced — a hand-edited `Delegated` fact
+   * carrying a Harness nothing would have resolved. Every gesture a human or a Zord really makes goes
+   * through `writer`.
+   */
   readonly outside: MissionStore;
   readonly now: () => Instant;
   /** The Zord's hand. */
@@ -262,18 +277,20 @@ function benchOf(): Bench {
 
   const now = clockFrom(BASE);
   const store = missionStore({ workspace });
+  const writer = missionWriter({ store });
   const outside = missionStore({ workspace });
 
   return {
     workspace,
     store,
+    writer,
     outside,
     now,
     plane: controlPlane({
       missionId: MISSION,
       zordId: SCOUT,
       workspace,
-      store: outside,
+      writer,
       panes: NO_PANES,
       cortex: NO_CORTEX,
       runner: NEVER_INVOKED,
@@ -302,7 +319,7 @@ function driving(bench: Bench, bounds: Bounds): DriveOptions {
     cap: bounds.cap,
     core: CORE,
     combination: bounds.plan,
-    store: bench.store,
+    writer: bench.writer,
     runner: bounds.runner,
     now: bench.now,
     settleTimeoutMs: bounds.settleTimeoutMs,
@@ -433,16 +450,14 @@ function submitsTheBuild(bench: Bench): () => Promise<void> {
 }
 
 /**
- * A human gesture in the Cockpit: `submit` against the Replay on disk, then append the entry.
+ * A human gesture in the Cockpit: one `record` through the door.
  *
- * The path `cockpit/server.ts` takes, through the store nothing else in the drive holds.
+ * Literally the path `cockpit/server.ts` takes — it holds a `MissionWriter` and calls exactly this — and
+ * the same door the drive and the Zord's control plane hold, which is what BUG-1's fix bought. It used to
+ * load and append through a second store of its own, which resembled the server and no longer does.
  */
 async function asHuman(bench: Bench, command: MissionCommand): Promise<ReplayEntry> {
-  const recorded = await bench.outside.load(MISSION);
-  const next = submit(recorded, command);
-  const entry = next[next.length - 1];
-  await bench.outside.append(MISSION, entry);
-  return entry;
+  return (await bench.writer.record(MISSION, command)).entry;
 }
 
 /* -------------------------------------------------------------------------------------------------
@@ -1027,6 +1042,127 @@ describe("a Harness that cannot be run", () => {
   });
 });
 
+describe("a Refusal of the drive's own open-mission", () => {
+  /**
+   * The route into it, now that `load → submit → append` is one atom.
+   *
+   * The queue makes every *Decision* fresh; it does not make a caller's **choice** of Command fresh. This
+   * drive reads the Replay, decides that the next gesture is `open-mission` because nothing has opened the
+   * Mission yet, and by the time `record` runs another hand has. That is the one live route, and it is the
+   * interleave `runtime/mission-writer.ts` states as what a queue cannot fix — before the fix it was
+   * BUG-1's own shape, which is why QA could not find a test for this guard: nothing exercised it.
+   *
+   * The other hand is a **real control plane** over the **same door**, so nothing here is a double: it is
+   * `mission_create`, the tool a Zord calls, deciding against the file exactly as it always does. The store
+   * wrapper delays nothing and decides nothing — it lets that gesture happen at the one observable moment,
+   * which is the load the drive chooses from.
+   */
+  async function droveInto(bench: Bench): Promise<Drive> {
+    let elsewhere: ControlPlane | undefined;
+    let first = true;
+
+    const store: MissionStore = {
+      append: (id, entry) => bench.store.append(id, entry),
+      list: () => bench.store.list(),
+      async load(id: MissionId): Promise<Replay> {
+        const recorded = await bench.store.load(id);
+        if (first) {
+          first = false;
+          const answered = await elsewhere?.handle(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: {
+                name: "mission_create",
+                arguments: {
+                  briefing: "somebody else got there first",
+                  mode: "combination",
+                  capCents: 10_000,
+                  capabilities: ["delegate"],
+                },
+              },
+            }),
+          );
+          if (answered === undefined || answered.includes('"isError":true')) {
+            throw new Error(`the other hand did not open the Mission: ${String(answered)}`);
+          }
+        }
+        return recorded;
+      },
+    };
+
+    const writer = missionWriter({ store });
+    elsewhere = controlPlane({
+      missionId: MISSION,
+      zordId: BUILDER,
+      workspace: bench.workspace,
+      writer,
+      panes: NO_PANES,
+      cortex: NO_CORTEX,
+      runner: NEVER_INVOKED,
+      now: bench.now,
+      maxPaneBytes: 4_096,
+    });
+
+    return drive({
+      ...driving(bench, {
+        // Reaching this runner at all would be a drive that carried on past its own Refusal.
+        runner: fakeAgentRunner([]),
+        plan: surveyOnly(),
+        cap: moneyFromCents(10_000),
+        settleTimeoutMs: 200,
+        pollEveryMs: 5,
+        maxAttemptsPerDelegation: 3,
+      }),
+      writer,
+    });
+  }
+
+  it("stops on it, rather than commissioning work into a Mission it did not open", async () => {
+    const bench = benchOf();
+
+    const stopped = await droveInto(bench);
+
+    expect(stopped.outcome.kind).toBe("refused");
+    if (stopped.outcome.kind !== "refused") {
+      throw new Error("unreachable: the assertion above already failed");
+    }
+    expect(stopped.outcome.step.command.kind).toBe("open-mission");
+    expect(stopped.outcome.step.decision.refusal.reason).toBe("illegal-transition");
+
+    // The record is what says the drive stopped **there**: the other hand's opening, this drive's refused
+    // opening, and nothing after it. A drive that carried on would have delegated into a Mission opened
+    // with a Briefing and a Core it never chose — and, without the exit, this is what changes.
+    const steps = stepsOf(stopped.replay);
+    expect(steps.map((step) => step.command.kind)).toEqual(["open-mission", "open-mission"]);
+    expect(refusedIn(steps)).toHaveLength(1);
+    expect(eventsIn(steps, "delegated")).toEqual([]);
+  });
+
+  it("is driven again from where the Mission actually is, which is why stopping costs nothing", async () => {
+    const bench = benchOf();
+    await droveInto(bench);
+
+    // Resumable by construction: the second turn re-derives its gesture from the Replay, so the Mission
+    // somebody else opened is the one this drive now advances. Stopping is not giving up.
+    const again = await drive(
+      driving(bench, {
+        runner: fakeAgentRunner([{ output: "surveyed", cost: moneyFromCents(0) }]),
+        plan: surveyOnly(),
+        cap: moneyFromCents(10_000),
+        settleTimeoutMs: 50,
+        pollEveryMs: 5,
+        maxAttemptsPerDelegation: 1,
+      }),
+    );
+
+    expect(eventsIn(stepsOf(again.replay), "delegated").map((made) => made.delegationId)).toEqual([
+      SURVEY,
+    ]);
+  });
+});
+
 describe("a Core that may not delegate", () => {
   it("stops on the Refusal rather than asking again forever", async () => {
     const bench = benchOf();
@@ -1322,7 +1458,7 @@ describe("what the types refuse", () => {
       cap: moneyFromCents(10),
       core: CORE,
       combination: recipe(),
-      store: bench.store,
+      writer: bench.writer,
       runner,
       now: bench.now,
       settleTimeoutMs: 1,
@@ -1390,7 +1526,7 @@ describe("what the types refuse", () => {
       cap: moneyFromCents(10),
       core: CORE,
       combination: recipe(),
-      store: missionStore({ workspace: "/nowhere" }),
+      writer: missionWriter({ store: missionStore({ workspace: "/nowhere" }) }),
       runner: fakeAgentRunner([]),
       now: clockFrom(BASE),
       pollEveryMs: 1,
@@ -1450,8 +1586,8 @@ describe("the boundary this module keeps", () => {
     // `@engine/index` and nothing deeper: `engine/index.ts` states that reaching into `engine/domain/*`
     // from outside the module is not part of the Contract, and this repository settled that every import
     // from `runtime/` names the public surface.
-    expect(imported.map((entry) => entry.from)).toEqual(["@engine/index", "./mission-store"]);
-    expect(imported.find((entry) => entry.from === "./mission-store")?.typeOnly).toBe(true);
+    expect(imported.map((entry) => entry.from)).toEqual(["@engine/index", "./mission-writer"]);
+    expect(imported.find((entry) => entry.from === "./mission-writer")?.typeOnly).toBe(true);
 
     // No disk, no process, no clock but `Date.now`, and no dependency: the Core is coordination, and
     // everything that touches the world is handed to it.

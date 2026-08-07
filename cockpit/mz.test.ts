@@ -18,6 +18,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { AgentRun } from "@engine/index";
 
+import type { MissionWriter } from "../runtime/mission-writer";
+
 import {
   CONTROL_URL_VARIABLE,
   MAX_FRAME_BYTES,
@@ -455,13 +457,28 @@ describe("what the types refuse", () => {
     expect(options.workspace).toBe("/work");
   });
 
-  it("hands back no store, no process table and no control plane", () => {
+  it("hands back the one door and no store, no process table and no control plane", () => {
     const reading = (cockpit: RunningCockpit): unknown =>
-      // @ts-expect-error `RunningCockpit` carries no `store`. A caller that wants one builds it over the
-      // Workspace, because the file is the channel — the same rule the drive follows.
+      // @ts-expect-error `RunningCockpit` carries no `store`. A store would let a caller load a Replay,
+      // decide against it and append the entry — the read-modify-write BUG-1 was, one layer out. What it
+      // hands back instead is the `writer`, whose `record` is that whole gesture as one atom.
       cockpit.store;
 
-    expect(typeof reading).toBe("function");
+    const appending = (cockpit: RunningCockpit): unknown =>
+      // @ts-expect-error and the door has no `append` either, which is what makes it a door.
+      cockpit.writer.append;
+
+    expect([typeof reading, typeof appending]).toEqual(["function", "function"]);
+  });
+
+  it("hands the door to a caller that drives a Combination, which is what it is on the answer for", () => {
+    // `mz .` does not start a drive (Gap 1), so a caller with a recipe composes `startCockpit` with
+    // `drive` — and the only thing it could otherwise build is a second store over the same Workspace,
+    // which is two queues and the lost update back. `cockpit/cockpit.e2e.test.ts` is that caller, and
+    // criterion 5 drives through this field.
+    const driving = (cockpit: RunningCockpit): MissionWriter => cockpit.writer;
+
+    expect(typeof driving).toBe("function");
   });
 
   it("asks for the bridge's input as a function, so a Cockpit never creates a stdin", () => {

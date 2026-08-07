@@ -3,7 +3,7 @@
  * deterministically, with nothing judged by a model on the way.
  *
  * ```
- * drive({ briefing, combination, store, runner, now, … }) -> { outcome, replay }
+ * drive({ briefing, combination, writer, runner, now, … }) -> { outcome, replay }
  * ```
  *
  * A Combination is **data**: a named formation with a declared Roster, the Gates that fall in it, and the
@@ -11,7 +11,7 @@
  * the Core to following a declared recipe, and a Core that planned would need a model call, a key and a
  * prompt Contract, which is precisely the thing that would make the first running version irreproducible.
  *
- * Every gesture goes through the engine's `submit`, against `stateOf` of what the store just handed over.
+ * Every gesture goes through the engine's `submit`, against `stateOf` of what the writer just handed over.
  * **This module holds no Mission state**, cached or otherwise, exactly as `cockpit/server.ts` and
  * `runtime/mcp-server.ts` hold none: the Mission is the file (ADR 0009), and a drive that remembered would
  * be a second copy of a truth the file already holds — the copy a human would be shown. It decides nothing
@@ -87,10 +87,14 @@
  *    falls after, and it is required — an optional one would mean "at the start", and a field with two
  *    meanings is the shape this repository refuses. A checkpoint before any work has been commissioned is
  *    also the one a human already passed: they gave the Briefing.
- * 3. **Two writers on one Mission file are not ordered**, inherited from the control plane's Gap 4. This
- *    drive is safe by construction rather than by locking: it appends nothing while a run is in flight, and
- *    a Zord writes only while one is. A second driver on the same Mission is not something this module can
- *    order.
+ * 3. **A second drive on one Mission is not ordered against this one.** ~~Two writers on one Mission file
+ *    are not ordered~~ — that Gap is **closed**: every gesture goes through `MissionWriter.record`, which
+ *    holds `load → submit → append` as one atom for every writer of the Workspace, so a Decision here can
+ *    no longer be made against a Mission the Cockpit or a Zord has already moved. What a queue cannot fix
+ *    is a *stale choice*: this drive reads the Replay, decides its next gesture is a `delegate`, and the
+ *    Mission moves before `record` runs. The engine then refuses it and the drive stops on its own
+ *    Refusal, which is the behaviour below — and re-driving re-derives the gesture from where the Mission
+ *    actually is. A second drive on one Mission therefore duplicates no work; it stops.
  * 4. **A failed run accrues nothing**, inherited from the pty runner's decision that an `AgentRunFailure`
  *    carries no cost. A Mission can spend money on a run that failed and the Meter will not show it.
  * 5. **No author on anything.** The sixth site of the Gap the engine records four times and the Cortex
@@ -111,7 +115,6 @@ import {
   revisionsIn,
   stateOf,
   stepsOf,
-  submit,
   type AgentReport,
   type AgentRunner,
   type Contract,
@@ -129,7 +132,6 @@ import {
   type Money,
   type RefusedStep,
   type Replay,
-  type ReplayEntry,
   type RunningMission,
   type Slice,
   type Briefing,
@@ -138,8 +140,8 @@ import {
   type ZordId,
 } from "@engine/index";
 
-// Type-only: this module opens no file and forks nothing. It is handed a store and a runner.
-import type { MissionStore } from "./mission-store";
+// Type-only: this module opens no file and forks nothing. It is handed a writer and a runner.
+import type { MissionWriter } from "./mission-writer";
 
 /* -------------------------------------------------------------------------------------------------
  * The recipe
@@ -446,7 +448,7 @@ export class BrokenClockError extends Error {
 
 /** What a drive is run with. Every collaborator is handed in; nothing has a hidden default. */
 export type DriveOptions = {
-  /** The Mission this drive opens and advances. Its Replay is the file the store keeps under this id. */
+  /** The Mission this drive opens and advances. Its Replay is the file the store behind the writer keeps. */
   readonly missionId: MissionId;
   /** The outcome the Mission is opened for. States the end, not the steps. */
   readonly briefing: Briefing;
@@ -463,8 +465,15 @@ export type DriveOptions = {
   readonly core: Core;
   /** The recipe. Checked with `combination()` before the first gesture. */
   readonly combination: Combination;
-  /** Where the Replay lives. The Mission is that file; nothing about it is cached here. */
-  readonly store: MissionStore;
+  /**
+   * The one door to the Mission's file. The Mission is that file; nothing about it is cached here.
+   *
+   * A writer rather than a store: `record` is `load → submit → append` as one atom, shared with the
+   * Cockpit's server and every control plane over the same Workspace. This drive held no queue at all
+   * before it — it did not need one against itself, and needed one against everybody else. See
+   * `runtime/mission-writer.ts`.
+   */
+  readonly writer: MissionWriter;
   /**
    * What runs a Zord.
    *
@@ -556,7 +565,7 @@ export type DriveOutcome =
  */
 export type Drive = {
   readonly outcome: DriveOutcome;
-  /** The Replay, re-read from the store after the last gesture. Frozen by the store. */
+  /** The Replay, re-read from disk after the last gesture. Frozen by the store. */
   readonly replay: Replay;
 };
 
@@ -579,7 +588,7 @@ export async function drive(options: DriveOptions): Promise<Drive> {
   checkOptions(options);
 
   for (;;) {
-    const recorded = await options.store.load(options.missionId);
+    const recorded = await options.writer.load(options.missionId);
     const state = stateOf(recorded);
 
     if (!isOpened(state)) {
@@ -784,7 +793,7 @@ async function waitForHandoff(
   const deadline = Date.now() + options.settleTimeoutMs;
 
   for (;;) {
-    const recorded = await options.store.load(options.missionId);
+    const recorded = await options.writer.load(options.missionId);
     const state = stateOf(recorded);
     if (!isOpened(state) || state.status !== "running") {
       return "moved-on";
@@ -899,20 +908,17 @@ function deliveryOf(recipe: Combination, state: RunningMission): Delivery {
 /**
  * Submits one Command and records what the domain answered.
  *
- * Every line is the engine's or the store's, and the path is the one `cockpit/server.ts` and
- * `runtime/mcp-server.ts` both take: load the Replay with no cache, `submit` against `stateOf` of it,
- * append the entry. **Refused as well as accepted**, because a Surface that recorded only what it accepted
- * would lose every Refusal, which is the half of the Replay a human most needs — and the drive's own
- * Refusals are exactly the ones that explain why it stopped.
+ * Every line is the engine's or the writer's, and the path is literally the one `cockpit/server.ts` and
+ * `runtime/mcp-server.ts` take, because all three call the same `record`: load the Replay with no cache,
+ * `submit` against `stateOf` of it, append the entry — as one atom per Mission. **Refused as well as
+ * accepted**, because a Surface that recorded only what it accepted would lose every Refusal, which is the
+ * half of the Replay a human most needs — and the drive's own Refusals are exactly the ones that explain
+ * why it stopped.
  *
  * Answers the refused Step when the Command was refused, and `undefined` when it was accepted.
  */
 async function record(options: DriveOptions, command: MissionCommand): Promise<RefusedStep | undefined> {
-  const recorded = await options.store.load(options.missionId);
-  const next = submit(recorded, command);
-  // `submit` appends exactly one entry and never throws, so the last one is this Command's.
-  const entry: ReplayEntry = next[next.length - 1];
-  await options.store.append(options.missionId, entry);
+  const { entry, replay: next } = await options.writer.record(options.missionId, command);
 
   if (entry.decision.kind === "accepted") {
     return undefined;
@@ -925,7 +931,7 @@ async function record(options: DriveOptions, command: MissionCommand): Promise<R
 
 /** The drive's answer, with the Replay re-read so what it hands back includes its own last gesture. */
 async function done(options: DriveOptions, outcome: DriveOutcome): Promise<Drive> {
-  return { outcome, replay: await options.store.load(options.missionId) };
+  return { outcome, replay: await options.writer.load(options.missionId) };
 }
 
 /**

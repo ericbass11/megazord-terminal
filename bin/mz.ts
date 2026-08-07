@@ -91,43 +91,32 @@
  * not carry it — so a compiled `mz` cannot serve the Cockpit without a second decision about shipping
  * sources beside output. A fifteen-line resolver keeps `mz .` a thing that runs from a clone.
  *
- * ## Two writers on one Mission file: declared, not resolved
+ * ## One door to the Mission file
  *
- * `cockpit/server.ts` (Gap: "two *processes* serving one Mission is not something this file can order"),
- * `runtime/mcp-server.ts` (Gap 4) and `runtime/combination-driver.ts` (Gap 3) each declared this and each
- * said it belongs to whoever composes them. **This is that composition, and it does not resolve it.**
+ * `cockpit/server.ts`, `runtime/mcp-server.ts` and `runtime/combination-driver.ts` each declared, in their
+ * own words, that two writers on one Mission file were not ordered, and each said it belonged to whoever
+ * composes them. This is that composition, and it **is** resolved here — by handing all of them the same
+ * door rather than by holding a rule.
  *
- * What is actually shared, precisely, because the answer is not "everything":
+ * What was actually wrong, because "unordered writes" was never the answer:
  *
- * - **Appends are ordered.** All three writers are handed the *same* `MissionStore`, whose queue keeps its
- *   appends in call order, so no line is ever torn or interleaved with another. That is the whole of what
- *   sharing the instance buys, and it is worth having.
- * - **The read-modify-write is not.** Each writer holds a queue of its own around `load → submit → append`
- *   — the server one, each control plane one, the driver none — so two of them can load the same Replay,
- *   both decide against the same state, and both append. The second Decision was then made against a
- *   Mission that had already moved: `evolve` ignores what it must (a second `Delegated` under one id, a
- *   second halt), so the Replay ends up carrying an **accepted** Decision that folds to nothing. That is
- *   exactly the failure `CLAUDE.md` names as breaking the one property this design exists for.
+ * - **Appends were already ordered.** All three writers get the *same* `MissionStore`, whose queue keeps
+ *   its appends in call order, so no line is ever torn or interleaved.
+ * - **The read-modify-write was not.** Each writer held a queue of its own around `load → submit → append`
+ *   — the server one, each control plane one, the driver none — so two of them could load the same Replay,
+ *   both decide against the same state, and both append. A `delegate` decided against a Mission that had
+ *   spent nothing stays **accepted** after the concurrent accrual has closed the Cap, so work is
+ *   commissioned that the same two gestures, ordered, refuse. server ↔ control plane is the ordinary pair
+ *   — a human answering a Gate while a Zord submits its Handoff — and the Cap is the one promise this
+ *   product makes about money.
  *
- * Two of the three pairs are safe by construction and one is not:
- *
- * - **driver ↔ control plane**: safe. The driver appends nothing while a run is in flight, and a Zord
- *   writes only while one is. That is the driver's own argument, and it holds here unchanged.
- * - **server ↔ driver**: narrow. A drive stops at every Halt, so the human answering a Gate is not usually
- *   racing anything — but a `kill-mission` typed while a Zord is mid-run does race the accrual.
- * - **server ↔ control plane**: real and ordinary. A human answering a Gate at the moment a Zord submits
- *   its Handoff is two writers, two queues, one file.
- *
- * **The shape of the fix**, stated so nobody has to rediscover it: the atom is not the append, it is
- * `load → submit → append`, so it has to live behind one door — a `runtime/mission-writer.ts` owning one
- * queue and exposing `record(missionId, command): Promise<ReplayEntry>`, injected in place of the
- * `MissionStore` into the server, every control plane and the driver. It cannot be done from here: a
- * wrapper around the store sees `load` and `append` as two calls with no caller between them, and a lock
- * taken at `load` and released at `append` deadlocks on the many readers that load and never append —
- * `waitForHandoff` polling, `delegationUnder`, every new WebSocket connection. Doing it properly changes
- * the options of three modules this task may not edit, which is why it is declared here instead of
- * half-built. `cockpit/cockpit.e2e.test.ts` pins the lost update with a test, so the fix has something to
- * turn red.
+ * So there is one `missionStore` and one `missionWriter` per Workspace here, and the writer is what the
+ * server, every control plane and any drive are given. `missionWriter` answers the same writer for the same
+ * store, so a second call cannot produce a second queue; what is left unordered is a second *store* over
+ * the same directory, or a second process, and one Cockpit per Workspace is the assumption this program
+ * meets by construction. `runtime/mission-writer.ts` argues the shape in full, and
+ * `cockpit/cockpit.e2e.test.ts` keeps the A/B — the same two concurrent gestures through one writer and
+ * through two — so the boundary is measured rather than described.
  *
  * ## Declared Gaps
  *
@@ -142,8 +131,10 @@
  *    from a file under `HOME`, which *is* passed; one that reads an API key out of the environment does not
  *    get it until its variable is written into that list. Inheriting the parent's whole environment would
  *    hand every credential this process holds to a process running text somebody else wrote.
- * 4. **Two writers on one Mission file are still not ordered**, and this is the task that composes both.
- *    See "Two writers on one Mission file" above: what is shared, what is safe, and the shape of the fix.
+ * 4. **Two processes over one Workspace are not ordered.** ~~Two writers on one Mission file are still not
+ *    ordered~~ — closed, see "One door to the Mission file": one store, one writer, three writers holding
+ *    it. What no module in this process can see is a second `mz` on the same Workspace, and nothing here
+ *    takes a lock on the directory to find out. One Cockpit per Workspace.
  * 5. **The mount is the JSON half of MCP's Streamable HTTP and no more.** One POST, one answer, `202` for
  *    a notification. There is no `text/event-stream`, no `GET` for a server-opened stream and no
  *    `Mcp-Session-Id`, because the control plane sends nothing a client did not ask for and holds no
@@ -166,6 +157,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentRun, AgentRunner, Instant, MissionId } from "@engine/index";
 import type { ControlTransport } from "../cockpit/server";
 import type { ControlPlane } from "../runtime/mcp-server";
+import type { MissionWriter } from "../runtime/mission-writer";
 import type { PaneId, PaneStatus } from "../runtime/pane-manager";
 import type { PresentProvider, Provider } from "../runtime/providers";
 
@@ -376,6 +368,19 @@ export type RunningCockpit = {
   /** Which Zord CLIs were found on this host's `PATH`, and which were looked for and not found. */
   readonly providers: readonly Provider[];
   /**
+   * The one door to the Mission's file, so a caller that drives a Combination writes through it too.
+   *
+   * Handed out for exactly one reason, and it is the reason BUG-1 existed: a caller with a recipe composes
+   * `startCockpit` with `drive` (Gap 1), and the only thing it could build for itself is a **second** store
+   * over the same Workspace — a second queue, and the lost update back. Reading is free through it, and it
+   * has no `append`, so what a caller can do with this is exactly what the server and every control plane
+   * can do: record a Command, and read the Replay.
+   *
+   * Still no store, deliberately: a store could append an entry decided against a Replay the caller loaded
+   * itself, which is the shape this whole change exists to make unrepresentable.
+   */
+  readonly writer: MissionWriter;
+  /**
    * Ends every Pane this Cockpit opened, then stops serving. Idempotent.
    *
    * The Panes go **first** and the promise waits for their process trees, because a Cockpit that exited
@@ -429,6 +434,7 @@ export async function startCockpit(options: CockpitOptions): Promise<RunningCock
   const { controlPlane } = await import("../runtime/mcp-server");
   const { cortexStore } = await import("../runtime/cortex-store");
   const { missionStore } = await import("../runtime/mission-store");
+  const { missionWriter } = await import("../runtime/mission-writer");
   const { paneManager } = await import("../runtime/pane-manager");
   const { hostLookup, providersIn } = await import("../runtime/providers");
   const { inheritedEnv, ptyAgentRunner } = await import("../runtime/pty-agent-runner");
@@ -437,6 +443,14 @@ export async function startCockpit(options: CockpitOptions): Promise<RunningCock
   const providers = await providersIn(hostLookup());
 
   const store = missionStore({ workspace: options.workspace });
+  /**
+   * The one door every writer of this Workspace goes through. See "One door to the Mission file".
+   *
+   * One store, one writer, and it is handed to the server, to every control plane and to whatever drives a
+   * Combination — `missionWriter` would answer this same writer to any of them that asked for it, which is
+   * the point of it being keyed on the store.
+   */
+  const writer = missionWriter({ store });
   const cortex = cortexStore({ workspace: options.workspace });
 
   /**
@@ -483,7 +497,7 @@ export async function startCockpit(options: CockpitOptions): Promise<RunningCock
       // Throws `InvalidIdError` on a blank name, which the mount turns into a JSON-RPC fault.
       zordId: zordId(named),
       workspace: options.workspace,
-      store,
+      writer,
       panes,
       cortex,
       runner,
@@ -517,7 +531,7 @@ export async function startCockpit(options: CockpitOptions): Promise<RunningCock
 
   const server = await cockpitServer({
     missionId: options.missionId,
-    store,
+    writer,
     panes,
     view: await cockpitView(),
     control,
@@ -535,6 +549,7 @@ export async function startCockpit(options: CockpitOptions): Promise<RunningCock
     workspace: options.workspace,
     missionId: options.missionId,
     providers,
+    writer,
     close(): Promise<void> {
       closed ??= (async (): Promise<void> => {
         // `allSettled`: a Pane whose tree outlived `SIGKILL` rejects, and one Pane that will not die must

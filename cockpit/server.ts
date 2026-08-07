@@ -24,7 +24,7 @@
  * ## No Mission state, and the two things that are not Mission state
  *
  * The Mission is the Replay on disk. Every answer this server gives about it is `stateOf` of what the
- * store just handed over, re-loaded on every gesture — there is no cached Replay, no cached state, no
+ * writer just handed over, re-loaded on every gesture — there is no cached Replay, no cached state, no
  * `Mission` field anywhere in this file. A second client that connects a moment later reads the same
  * file and derives the same state, which is the property `server.test.ts` proves with two clients and no
  * shared object between them.
@@ -40,7 +40,7 @@
  *
  * ## The process table is injected, and the server has no dependency
  *
- * `PaneManager` and `MissionStore` arrive as **types only**, so nothing in this module requires
+ * `PaneManager` and `MissionWriter` arrive as **types only**, so nothing in this module requires
  * `node-pty` or touches a disk on its own behalf. Three things follow, and the first is the reason:
  *
  * - **A Pane is a real process and this file owns none.** Spawning belongs to the control plane
@@ -135,16 +135,23 @@
  * changes a contract the techspec pins, so it belongs to whoever draws the view and finds out what a
  * human needs to see.
  *
- * ## Two gestures at once
+ * ## Two gestures at once, and where the ordering lives now
  *
- * Every `submit` runs through one queue, in call order. Two clients submitting at the same moment would
- * otherwise both load the Replay, both `submit` against the same state, and the second append would
- * record an entry decided against a Mission that had already moved — the classic lost update, on the one
- * file that is the record. The queue is the same idiom `mission-store.ts` uses for its appends, and it
- * is ordering rather than state: nothing is remembered between turns.
+ * `load → submit → append` is one atom and this file no longer holds it: `MissionWriter.record` does, and
+ * it is the **same** writer every control plane and every drive over that Workspace is handed. This
+ * server originally kept a queue of its own around those three steps, which ordered two clients of *this*
+ * server and nothing else — so a human answering a Gate here while a Zord submitted its Handoff through
+ * the control plane still produced the classic lost update on the one file that is the record. That was
+ * BUG-1, and `runtime/mission-writer.ts` argues the whole of it.
  *
- * Two *processes* serving one Mission is not something this file can order, and one Cockpit per
- * Workspace is the assumption `mz` meets by construction.
+ * The queue that remains here orders nothing about a Mission. It is what `close` awaits: a gesture that
+ * has been accepted must reach the disk before this server stops listening, or `mz` exiting would lose a
+ * Decision the domain had already made. It is bounded by whatever was already accepted, so it cannot hang
+ * on a client.
+ *
+ * Two *processes* serving one Mission is still not something anything here can order — one Cockpit per
+ * Workspace is the assumption `mz` meets by construction, and `mission-writer.ts` states the same bound
+ * for two stores over one Workspace.
  *
  * ## The control plane's mount, added by Task 9 and why it is here rather than beside it
  *
@@ -203,7 +210,6 @@ import {
   isOpened,
   meterOf,
   stateOf,
-  submit,
   type MissionCommand,
   type MissionId,
   type Replay,
@@ -211,7 +217,7 @@ import {
 
 // Type-only, both of them: this module requires no `node-pty` and opens no file. See the module doc.
 import type { PaneId, PaneManager, PaneStatus } from "../runtime/pane-manager";
-import type { MissionStore } from "../runtime/mission-store";
+import type { MissionWriter } from "../runtime/mission-writer";
 
 import { fromCockpitIn, textOf, type FromCockpit, type ToCockpit } from "./protocol";
 
@@ -302,8 +308,15 @@ export type CockpitServerOptions = {
    * `open-mission` is what creates one.
    */
   readonly missionId: MissionId;
-  /** Where the Replay lives. The Mission **is** this file; nothing about it is cached here. */
-  readonly store: MissionStore;
+  /**
+   * The one door to the Mission's file.
+   *
+   * A writer rather than a store, and that is the fix for BUG-1: `record` is `load → submit → append` as
+   * one atom, shared with every control plane and every drive over the same Workspace, so a gesture made
+   * here cannot be decided against a Mission another writer has already moved. The store's own `append`
+   * is deliberately out of reach — see `runtime/mission-writer.ts`.
+   */
+  readonly writer: MissionWriter;
   /**
    * The live process table.
    *
@@ -376,7 +389,10 @@ export async function cockpitServer(options: CockpitServerOptions): Promise<Cock
   const maxMessageBytes = options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
   const connections = new Set<Connection>();
 
-  /** The one queue every `submit` passes through, in call order. See "Two gestures at once". */
+  /**
+   * What is in flight, so `close` can wait for it. **Not** what orders a Mission — see "Two gestures at
+   * once": `MissionWriter.record` is the atom, and it orders this server against every other writer.
+   */
   let tail: Promise<void> = Promise.resolve();
 
   function inTurn(work: () => Promise<void>): Promise<void> {
@@ -460,11 +476,14 @@ export async function cockpitServer(options: CockpitServerOptions): Promise<Cock
   }
 
   /**
-   * One gesture, decided by the engine and recorded if it was accepted.
+   * One gesture, decided by the engine and recorded.
    *
-   * The whole Mission half of this server. Every line is the engine's or the store's:
+   * The whole Mission half of this server, and every line of it is somebody else's: `record` on the
+   * writer is `load → submit → append` as one atom (`runtime/mission-writer.ts`), so this function reads
+   * what came back and sends it on.
    *
-   * 1. the Replay comes off the disk — no cache, so two clients cannot disagree about it;
+   * 1. the Replay comes off the disk inside the writer's queue — no cache, and no other writer between
+   *    the load and the append;
    * 2. `submit` calls `decide` against `stateOf` of it, and appends the entry to the Replay it answers;
    * 3. the entry is appended to the file — **refused as well as accepted**;
    * 4. the entry goes back whole — Command, Decision, Refusal and all.
@@ -489,16 +508,12 @@ export async function cockpitServer(options: CockpitServerOptions): Promise<Cock
    * this changes what is remembered and never what is true.
    */
   async function record(connection: Connection, command: MissionCommand): Promise<void> {
-    const recorded = await options.store.load(options.missionId);
-    const next = submit(recorded, command);
-    // `submit` appends exactly one entry and never throws, so the last one is this Command's. The
-    // length is asserted in the test rather than assumed here.
-    const entry = next[next.length - 1];
-
-    await options.store.append(options.missionId, entry);
+    const { entry, replay } = await options.writer.record(options.missionId, command);
 
     sendTo(connection, { kind: "decided", entry });
-    broadcast(readingOf(next));
+    // The Replay the writer answered, not a fresh load: it is the Mission as of this gesture, and a
+    // re-read could report a state a *later* gesture produced against the entry just sent.
+    broadcast(readingOf(replay));
   }
 
   /* ---------------------------------------------------------------------------------------------
@@ -718,7 +733,7 @@ export async function cockpitServer(options: CockpitServerOptions): Promise<Cock
 
     // Where the Mission stands, before anything is asked. Read off the disk, which is what makes a
     // client that connects late see exactly what a client that was here all along sees.
-    void options.store
+    void options.writer
       .load(options.missionId)
       .then((recorded) => {
         sendTo(connection, readingOf(recorded));

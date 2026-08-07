@@ -126,9 +126,14 @@ criterion did.
      buffer (the `1049` mode a TUI switches into), no insert or delete line, no scroll region, no
      reflow on resize, one column per code point, no mouse. A Zord CLI that runs as a TUI therefore
      draws over the scrollback instead of into a buffer of its own, and most of them run as one.
-  2. `jsdom` as a dev dependency, so `attach` is executed by a test. Today nothing runs it: what a
-     click decides is a pure function with its own test, and that a click reaches the delegated
-     listener is unproven.
+  2. ~~`jsdom` as a dev dependency, so `attach` is executed by a test.~~ **Closed by the bugfix, and
+     the excuse was wrong.** QA severed the one wire between a click and a Command and 1078 tests
+     stayed green, then disproved the premise by executing the served bootstrap under a shim it wrote.
+     `attach` is now driven by a shim that decides nothing of its own — it parses the markup the
+     renderers really emitted and delivers events to the listeners really registered, and every
+     assertion about meaning compares against the module's own exported `answerFor`/`keystrokesOf`.
+     It found a live defect on its first run. What `jsdom` would still buy is a real browser's own
+     `closest`, `dataset`, real event delivery and `innerHTML` parsing, which stays this item's scope.
   3. The Kill answer. The PRD names three human answers and Task 6 was asked for two. A Mission
      stopped at its Cap whose human does not want to spend more currently has nothing to say.
 - **Verification**: a Pane running a TUI renders it; a click drives a Gate decision under a
@@ -140,7 +145,7 @@ criterion did.
 
 ## Task 11 — One door to the Mission file
 
-- **Status**: todo
+- **Status**: done
 - **Severity**: this is a correctness hole, not a tidy-up. Read the second bullet before scheduling it.
 - **Goal**: one queue in front of `load → submit → append`, so the three writers of a Mission cannot
   decide against a state another one has already moved.

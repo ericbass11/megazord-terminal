@@ -12,34 +12,39 @@
  *   render is compared to a stored snapshot: every assertion reads a value out of the HTML and says why
  *   it must be there.
  *
- * **There is no DOM, and that is a Gap, not a choice.** `jsdom` is not installed in this repository —
- * `npm ls jsdom` is empty, and asking for the jsdom environment in a per-file docblock fails the whole
- * file with `Cannot find package 'jsdom'` — and `package.json` is outside this task's scope, so the
- * environment cannot be added. Writing a DOM stub instead was rejected on this repository's own rule: a
- * fake with rules of its own is a second rule set the tests would start passing because of, and a
- * hand-written `closest` that disagrees with a browser's is exactly the bug a DOM test exists to catch.
+ * **There is a DOM here, and it is a shim rather than a browser.** `jsdom` is not installed in
+ * this repository — `npm ls jsdom` is empty, and asking for the jsdom environment in a per-file docblock
+ * fails the whole file with `Cannot find package 'jsdom'` — and `package.json` is outside this task's
+ * scope. So `attach` is driven under a shim this file builds, argued where it sits ("A DOM small enough
+ * to be honest"): it parses the markup the renderers really emitted, delivers events to the listeners
+ * `attach` really registered, and holds **no judgement about the Cockpit** — every assertion about what a
+ * click *means* is made against the module's own exported `answerFor`, `keystrokesOf` and `ACTIONS`.
  *
  * (Naming that pragma in this docblock is itself a trap, and it cost a red run: **vitest reads the
  * pragma out of the first docblock of a file, comment or not**, exactly as TypeScript honours
  * `@ts-expect-error` only when the directive opens the comment. Mentioning it in prose here switched the
  * environment on and the file could not start at all.)
  *
- * So `attach` is not executed, and what would have been proven by clicking is proven in three other
- * ways, none of which is a snapshot:
+ * That was written the other way round until QA planted a defect in it: severing the one line in `attach`
+ * that sends a click's gesture left all 1078 tests green, because nothing executed the function. The
+ * three things that stood in for it are all still here and all still worth having, and none of them is
+ * the wire:
  *
  * 1. **The judgement is driven directly.** `answerFor` is the whole of what a click decides, and it is
  *    called with the values a click would carry.
  * 2. **The renderer and the reader are cross-checked** (see "The markup a click reads"). Every
  *    `data-action` the renderers emit must be an action `answerFor` knows; every `data-value` they emit
- *    must be a value `answerFor` reads; every region id `attach` looks up must exist in the markup. That
- *    is the contract a DOM test would exercise, asserted over the markup itself.
+ *    must be a value `answerFor` reads; every region id `attach` looks up must exist in the markup.
  * 3. **The end-to-end run is in `cockpit/view.test.ts`**, over the real server and a real WebSocket.
  *
- * What stays unproven is the browser's own half: that a click event bubbles to the delegated listener,
- * and that `closest` and `dataset` behave as read. It is listed as a Gap in `client.ts` too.
+ * What stays unproven is the **vendor's** half: that a browser's own `closest`, `dataset` and event
+ * dispatch behave as this shim does, that `innerHTML` parses this markup the same way, and that anything
+ * is laid out or painted. It is listed as a Gap in `client.ts` too. The shim earned its keep on its first
+ * run: it found the Kill control reading its PaneId out of an attribute *name* with a capital letter in
+ * it, which an HTML parser lowercases — see `valuesAround`.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   EMPTY_REPLAY,
@@ -72,12 +77,13 @@ import {
   type ReplayEntry,
 } from "@engine/index";
 
-import type { ToCockpit } from "../protocol";
+import type { FromCockpit, ToCockpit } from "../protocol";
 import type { PaneStatus } from "../../runtime/pane-manager";
 
 import {
   ACTIONS,
   answerFor,
+  attach,
   brl,
   centsIn,
   cockpitOf,
@@ -993,10 +999,10 @@ describe("the markup a click reads agrees with what answerFor reads", () => {
       for (const name of attributesIn(html, "data-value")) {
         expect(read.has(name)).toBe(true);
       }
-      // `data-value-paneId` is the other spelling: a value carried on the control itself.
-      for (const [, name] of html.matchAll(/data-value-([A-Za-z]+)=/gu)) {
-        expect(read.has(name ?? "")).toBe(true);
-      }
+      // And there is no second spelling: a value named by part of an attribute's *name* would be
+      // lowercased by an HTML parser and arrive under a name `answerFor` does not read. See
+      // `valuesAround`, which used to carry that branch and what it cost.
+      expect(html).not.toMatch(/data-value-[A-Za-z]/u);
     }
   });
 
@@ -1010,7 +1016,10 @@ describe("the markup a click reads agrees with what answerFor reads", () => {
 
     const panes = showing(running());
     fold(panes, { kind: "pane-data", paneId: "p", chunk: "x" } as ToCockpit);
-    expect(renderPanes(panes)).toContain(`data-value-paneId="p"`);
+    // The same mechanism as the Gate's: the name is the *value* of `data-value`, so no attribute name
+    // carries a capital letter and nothing depends on how a parser cases one.
+    expect(renderPanes(panes)).toContain(`data-value="paneId"`);
+    expect(renderPanes(panes)).toContain(`value="p"`);
   });
 
   it("renders every region attach looks up, so a redraw finds somewhere to draw", () => {
@@ -1033,6 +1042,715 @@ describe("the markup a click reads agrees with what answerFor reads", () => {
   it("emits a pane-kill addressed to the Pane the control names", () => {
     const answer = answerFor("kill-pane", { paneId: "pane-7" }, at(9));
     expect(answer).toEqual({ kind: "sends", sent: { kind: "pane-kill", paneId: "pane-7" } });
+  });
+});
+
+/* -------------------------------------------------------------------------------------------------
+ * A record damaged past what any rule validated — BUG-2
+ *
+ * `runtime/mission-store.ts` deliberately does not judge what it loads (ADR 0009), so a `mission-halted`
+ * fact that lost its Halt folds cleanly to `{ status: "halted", halt: null }` and the server serves it.
+ * The engine closed its half of this inside this PRD — `added()` in `engine/domain/replay.ts` — and the
+ * view had not. Reading `state.halt.reason` threw inside the socket's `message` handler, where nothing
+ * catches it, so the Cockpit drew nothing at all and said nothing about why.
+ *
+ * The damage is applied to a Replay the **engine** built and folded by the **engine's** `stateOf`, so
+ * every state below is one the domain really produces from a file in that condition.
+ * ---------------------------------------------------------------------------------------------- */
+
+/** One Event of an accepted Decision, replaced. Everything else about the Replay is the engine's. */
+function damaged(recorded: Replay, hurt: (event: { readonly kind: string }) => unknown): Replay {
+  return recorded.map((entry) =>
+    entry.decision.kind === "accepted"
+      ? { ...entry, decision: { ...entry.decision, events: entry.decision.events.map(hurt) } }
+      : entry,
+  ) as unknown as Replay;
+}
+
+/** The Cap halt of criterion 7, with the Halt itself gone: the line `bugs.md` reproduces. */
+function haltLost(): Replay {
+  return damaged(capHalted(), (event) =>
+    event.kind === "mission-halted" ? { ...event, halt: null } : event,
+  );
+}
+
+/** A Gate halt that says it is a Gate and names none. The other half of the same damage. */
+function gateIdLost(): Replay {
+  return damaged(gateHalted(), (event) =>
+    event.kind === "mission-halted" ? { ...event, halt: { reason: "gate-open" } } : event,
+  );
+}
+
+describe("a Halt no rule validated is read, never dereferenced", () => {
+  it("folds to a halted Mission with no Halt, which is the premise the rest of this rests on", () => {
+    const state = stateOf(haltLost());
+    expect(state.status).toBe("halted");
+    // Measured rather than assumed: a test whose reasoning contains "because" has to check the because.
+    expect((state as unknown as { readonly halt: unknown }).halt).toBeNull();
+  });
+
+  it("does not read a lost Halt as a Cap, because that is a different fact and a different remedy", () => {
+    const state = stateOf(haltLost());
+    expect(() => stoppedAtCap(state)).not.toThrow();
+    expect(stoppedAtCap(state)).toBe(false);
+    expect(() => haltingGate(state)).not.toThrow();
+    expect(haltingGate(state)).toBeUndefined();
+  });
+
+  it("offers nothing for a Gate the halt names but the fact does not", () => {
+    const state = stateOf(gateIdLost());
+    expect(haltingGate(state)).toBeUndefined();
+    // And the Gate is still on the record: what is missing is which one the Mission stopped at, so
+    // answering any of them would be answering a question nobody asked.
+    expect(isOpened(state) ? state.gates.length : 0).toBe(1);
+  });
+
+  it("draws the whole Cockpit anyway — the bar, the Meter and the record — and offers no answer", () => {
+    const cockpit = showing(haltLost());
+    const html = renderCockpit(cockpit);
+
+    expect(html).toContain(escapeHtml("Ship the Cockpit view"));
+    expect(html).toContain(formatMoney(moneyFromDecimal("10.00")));
+    expect(renderAnswers(cockpit)).toBe("");
+    // The pill still says where the Mission is. What cannot be read is *why* it stopped, and the view
+    // says nothing rather than guessing.
+    expect(html).toContain("halted");
+  });
+
+  it("draws a Mission whose delegation list was lost, instead of counting it", () => {
+    const hurt = damaged(running(), (event) =>
+      event.kind === "delegated" ? { ...event, delegationId: undefined } : event,
+    );
+    const cockpit = cockpitOf(6, 40, 50);
+    fold(cockpit, {
+      kind: "mission",
+      state: { ...stateOf(hurt), delegations: null },
+    } as unknown as ToCockpit);
+
+    expect(() => renderMission(cockpit)).not.toThrow();
+    expect(renderMission(cockpit)).toContain("a delegation list this Mission does not carry");
+    // Never "0 delegations": a number in front of a human that no rule computed is the lie this
+    // repository keeps refusing.
+    expect(renderMission(cockpit)).not.toContain("0 delegation");
+  });
+
+  it("offers no Gate when the list holds something that is not one", () => {
+    // Guarding the list and then dereferencing what is in it is the half of the rule that is easy to
+    // miss: a `find` callback reading `gate.id` off `[null]` throws in the same listener, for the same
+    // reason. Reachable from a frame, because `fold` checks that a state is an object and no more.
+    const cockpit = cockpitOf(6, 40, 50);
+    fold(cockpit, {
+      kind: "mission",
+      state: {
+        status: "halted",
+        halt: { reason: "gate-open", gateId: "g-somewhere" },
+        gates: [null],
+        delegations: [],
+      },
+    } as unknown as ToCockpit);
+
+    expect(() => haltingGate(cockpit.state)).not.toThrow();
+    expect(haltingGate(cockpit.state)).toBeUndefined();
+    expect(() => renderMission(cockpit)).not.toThrow();
+  });
+
+  it("attributes nothing to a Pane when the Delegation list holds something that is not one", () => {
+    const cockpit = cockpitOf(6, 40, 50);
+    fold(cockpit, {
+      kind: "mission",
+      state: { status: "running", delegations: [null], gates: [] },
+    } as unknown as ToCockpit);
+
+    expect(() => delegationFor(cockpit.state, "pane-one")).not.toThrow();
+    expect(delegationFor(cockpit.state, "pane-one")).toBeUndefined();
+    expect(providerFor(cockpit.state, "pane-one")).toBeUndefined();
+    expect(spentOn(cockpit.state, "pane-one")).toBeUndefined();
+  });
+
+  it("draws an entry whose Decision was lost, and says that is what is missing", () => {
+    // The Command half of a Step was already read as `unknown`; the Decision was not, and
+    // `entry.decision.kind` throws off an entry that lost it. The record still draws, and it says which
+    // of the two it could not read rather than reporting the gesture as refused.
+    const entry = { command: { kind: "delegate" } } as unknown as ReplayEntry;
+
+    expect(() => renderEntry(entry)).not.toThrow();
+    expect(renderEntry(entry)).toContain("an unreadable Decision");
+    expect(renderEntry(entry)).toContain("delegate");
+    expect(renderEntry(entry)).not.toContain("refused");
+  });
+});
+
+/* =================================================================================================
+ * A DOM small enough to be honest
+ *
+ * `attach` is the one function in `client.ts` that touches a page, and until now **nothing executed
+ * it**: QA's plant severed the single line that sends a click's gesture and all 1078 tests stayed
+ * green. `jsdom` is not installed and `package.json` is out of scope, so the choice is a shim or
+ * nothing — and QA showed a shim is enough by driving the served bootstrap under one it wrote itself.
+ *
+ * ## Where the line is drawn, because this repository has a rule about doubles
+ *
+ * "A fake with rules of its own is a second rule set the tests pass because of." So this one holds **no
+ * judgement about the Cockpit at all**: it does not know what a click means, which attributes matter, or
+ * what a gesture looks like. It does two things a browser does — parse the markup the view really
+ * emitted, and deliver an event to the listeners `attach` really registered — and records what it was
+ * asked to send. Every assertion about *meaning* is made against the module's own exported
+ * `answerFor`, `keystrokesOf` and `ACTIONS`: the tests below never spell a frame out by hand, they
+ * compare what came out of the socket with what the pure function says that click meant.
+ *
+ * Three consequences of that line, stated rather than discovered later:
+ *
+ * - **The markup is the view's**, never this file's. The tree is parsed from `renderCockpit` output, so
+ *   a control the view stops rendering disappears from these tests instead of passing against a fixture
+ *   nobody ships. The one exception is the "action nobody rendered" case, which cannot come from a
+ *   renderer by construction and says so where it sits.
+ * - **The parser is guarded rather than trusted.** A parser that quietly dropped elements would make
+ *   every test below pass over an empty tree, which is the under-reporting failure `CLAUDE.md` records
+ *   about scans. `the parser sees every control the markup carries` counts the raw string's attributes
+ *   against the tree's, so the shim cannot be silently wrong about the thing it exists to read.
+ * - **Attribute names are lowercased**, which is what an HTML parser does, and it is the one place this
+ *   shim's fidelity has teeth: the first run of these tests found the Kill control reading its PaneId
+ *   out of `data-value-paneId`, whose `dataset` key in a browser is `valuePaneid`. `valuesAround`
+ *   records what that cost and why the view no longer depends on it.
+ *
+ * What is still not proven, and no shim can prove: that a browser's own `closest`, `dataset` and event
+ * dispatch behave as read here, that `innerHTML` parses this markup the same way, and that anything is
+ * laid out or painted. This is the wiring, exercised. It is not a browser.
+ * ============================================================================================== */
+
+/** The tags that carry no closing tag. `input` is the only one this view emits; the rest are HTML's. */
+const VOID_TAGS: ReadonlySet<string> = new Set(["input", "br", "hr", "img", "meta", "link"]);
+
+const TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s=/>]+(?:="[^"]*")?)*)\s*(\/?)>/gu;
+const ATTRIBUTE = /([^\s=/>]+)(?:="([^"]*)")?/gu;
+
+/** The reverse of `escapeHtml`, which is the only escaping the view does. `&amp;` last, as a parser does. */
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, '"')
+    .replace(/&#39;/gu, "'")
+    .replace(/&amp;/gu, "&");
+}
+
+/** `data-value-paneid` → `valuePaneid`. Dash-to-camel, over a name a parser has already lowercased. */
+function camelOf(name: string): string {
+  return name.replace(/-([a-z0-9])/gu, (_whole, letter: string) => letter.toUpperCase());
+}
+
+type ShimEvent = {
+  readonly type: string;
+  readonly target: ShimElement;
+  readonly key: string;
+  readonly ctrlKey: boolean;
+  readonly altKey: boolean;
+  preventDefault(): void;
+};
+
+/** One element. Nothing here is about the Cockpit; it is the handful of members `attach` touches. */
+class ShimElement {
+  readonly tag: string;
+  readonly attributes: ReadonlyMap<string, string>;
+  /** Children and text, in the order they were parsed, so `textContent` is exact rather than nearly. */
+  readonly nodes: (ShimElement | string)[] = [];
+  parent: ShimElement | undefined = undefined;
+  scrollTop = 0;
+  private readonly listeners = new Map<string, ((event: ShimEvent) => void)[]>();
+
+  constructor(tag: string, attributes: ReadonlyMap<string, string>) {
+    this.tag = tag;
+    this.attributes = attributes;
+  }
+
+  get children(): ShimElement[] {
+    return this.nodes.filter((node): node is ShimElement => typeof node !== "string");
+  }
+
+  /** What a human reads, entity-decoded, as a browser's `textContent` answers it. */
+  get textContent(): string {
+    return this.nodes
+      .map((node) => (typeof node === "string" ? node : node.textContent))
+      .join("");
+  }
+
+  /** A browser's `scrollHeight` on an element nothing laid out. `attach` only ever writes `scrollTop`. */
+  get scrollHeight(): number {
+    return 0;
+  }
+
+  get dataset(): Record<string, string> {
+    const data: Record<string, string> = {};
+    for (const [name, value] of this.attributes) {
+      if (name.startsWith("data-")) {
+        data[camelOf(name.slice("data-".length))] = value;
+      }
+    }
+    return data;
+  }
+
+  /**
+   * Replaces this element's content, exactly as `attach` does on the root and on a region.
+   *
+   * Write-only on purpose: a browser's getter **serialises its children**, and a serialiser here would be
+   * a rule of this shim's own that an assertion could then pass or fail because of. Tests read
+   * `textContent`, which is what a human reads.
+   */
+  set innerHTML(html: string) {
+    this.nodes.length = 0;
+    parseInto(this, html);
+  }
+
+  /** Descendants, in document order. A browser's `querySelector*` never matches the element itself. */
+  descendants(): ShimElement[] {
+    return this.children.flatMap((child) => [child, ...child.descendants()]);
+  }
+
+  querySelector(selector: string): ShimElement | null {
+    return this.descendants().find((element) => matches(element, selector)) ?? null;
+  }
+
+  querySelectorAll(selector: string): ShimElement[] {
+    return this.descendants().filter((element) => matches(element, selector));
+  }
+
+  closest(selector: string): ShimElement | null {
+    for (let at: ShimElement | undefined = this; at !== undefined; at = at.parent) {
+      if (matches(at, selector)) {
+        return at;
+      }
+    }
+    return null;
+  }
+
+  addEventListener(type: string, listener: (event: ShimEvent) => void): void {
+    const held = this.listeners.get(type) ?? [];
+    held.push(listener);
+    this.listeners.set(type, held);
+  }
+
+  listenersFor(type: string): readonly ((event: ShimEvent) => void)[] {
+    return this.listeners.get(type) ?? [];
+  }
+}
+
+/** An `<input>`, whose `value` starts as the attribute said and is whatever was typed after that. */
+class ShimInput extends ShimElement {
+  value: string;
+
+  constructor(tag: string, attributes: ReadonlyMap<string, string>) {
+    super(tag, attributes);
+    this.value = attributes.get("value") ?? "";
+  }
+}
+
+/**
+ * The three selector forms this view uses: `#id`, `.class`, `[attribute]`.
+ *
+ * Anything else **throws**, rather than answering "no match": a shim that silently matched nothing would
+ * turn a renamed selector into a green test, which is the failure mode this whole section exists to
+ * close.
+ */
+function matches(element: ShimElement, selector: string): boolean {
+  if (selector.startsWith("#")) {
+    return element.attributes.get("id") === selector.slice(1);
+  }
+  if (selector.startsWith(".")) {
+    return (element.attributes.get("class") ?? "").split(/\s+/u).includes(selector.slice(1));
+  }
+  if (selector.startsWith("[") && selector.endsWith("]")) {
+    return element.attributes.has(selector.slice(1, -1));
+  }
+  throw new Error(`this shim does not implement the selector ${JSON.stringify(selector)}`);
+}
+
+/** Attribute names lowercased, values entity-decoded: what an HTML parser hands a `dataset`. */
+function attributesIn(source: string): ReadonlyMap<string, string> {
+  const attributes = new Map<string, string>();
+  for (const [, name, value] of source.matchAll(ATTRIBUTE)) {
+    attributes.set((name ?? "").toLowerCase(), decodeEntities(value ?? ""));
+  }
+  return attributes;
+}
+
+/** Parses the view's own dialect: quoted attributes, escaped text, `<input>` void, nothing else. */
+function parseInto(root: ShimElement, html: string): void {
+  const open: ShimElement[] = [root];
+  let at = 0;
+
+  const hold = (text: string): void => {
+    if (text.length > 0) {
+      open[open.length - 1]?.nodes.push(decodeEntities(text));
+    }
+  };
+
+  for (const found of html.matchAll(TAG)) {
+    hold(html.slice(at, found.index));
+    at = found.index + found[0].length;
+
+    const tag = (found[2] ?? "").toLowerCase();
+    if (found[1] === "/") {
+      const depth = open.findLastIndex((element) => element.tag === tag);
+      if (depth > 0) {
+        open.length = depth;
+      }
+      continue;
+    }
+
+    const element =
+      tag === "input"
+        ? new ShimInput(tag, attributesIn(found[3] ?? ""))
+        : new ShimElement(tag, attributesIn(found[3] ?? ""));
+    const holder = open[open.length - 1];
+    if (holder !== undefined) {
+      element.parent = holder;
+      holder.nodes.push(element);
+    }
+    if (!VOID_TAGS.has(tag) && found[4] !== "/") {
+      open.push(element);
+    }
+  }
+
+  hold(html.slice(at));
+}
+
+/** A page with one root, the four globals `attach` reads, and a note of everything sent. */
+type Page = {
+  readonly root: ShimElement;
+  /** Every `FromCockpit` `attach` handed to `send`, in order. Nothing is interpreted. */
+  readonly sent: FromCockpit[];
+  /** The socket's `message` handler, which is what `attach` answers with. */
+  readonly receives: (said: ToCockpit) => void;
+  /** The Instant every gesture on this page carries, so an assertion can rebuild the same Command. */
+  readonly at: string;
+  /** Delivers an event to the listeners registered on the element and on its ancestors. */
+  click(target: ShimElement): void;
+  keydown(target: ShimElement, key: string, ctrl?: boolean, alt?: boolean): boolean;
+};
+
+/**
+ * `attach`, running: the real function, over the real markup, with the real listeners.
+ *
+ * The globals are installed here because `client.ts` reads `HTMLElement` and `HTMLInputElement` off the
+ * global scope — the browser's own way of asking "is this an element" — and Vitest's node environment
+ * has neither. They are removed again in `afterEach`, so no other test in this file ever sees them.
+ */
+function attached(cockpit: Cockpit): Page {
+  (globalThis as Record<string, unknown>)["HTMLElement"] = ShimElement;
+  (globalThis as Record<string, unknown>)["HTMLInputElement"] = ShimInput;
+
+  const root = new ShimElement("div", new Map());
+  const sent: FromCockpit[] = [];
+  const now = new Date(BASE + 99 * 60_000).toISOString();
+
+  const receives = attach(cockpit, {
+    root: root as unknown as HTMLElement,
+    send: (frame: FromCockpit) => {
+      sent.push(frame);
+    },
+    now: () => now,
+  });
+
+  const deliver = (target: ShimElement, event: ShimEvent): void => {
+    for (let at: ShimElement | undefined = target; at !== undefined; at = at.parent) {
+      for (const listener of at.listenersFor(event.type)) {
+        listener(event);
+      }
+    }
+  };
+
+  return {
+    root,
+    sent,
+    receives,
+    at: now,
+    click(target: ShimElement): void {
+      deliver(target, {
+        type: "click",
+        target,
+        key: "",
+        ctrlKey: false,
+        altKey: false,
+        preventDefault: () => undefined,
+      });
+    },
+    keydown(target: ShimElement, key: string, ctrl = false, alt = false): boolean {
+      let prevented = false;
+      deliver(target, {
+        type: "keydown",
+        target,
+        key,
+        ctrlKey: ctrl,
+        altKey: alt,
+        preventDefault: () => {
+          prevented = true;
+        },
+      });
+      return prevented;
+    },
+  };
+}
+
+afterEach(() => {
+  delete (globalThis as Record<string, unknown>)["HTMLElement"];
+  delete (globalThis as Record<string, unknown>)["HTMLInputElement"];
+});
+
+/** A Cockpit with two Panes, so "the Pane this control sits in" has two candidates rather than one. */
+function withPanes(): Cockpit {
+  const cockpit = showing(running());
+  fold(cockpit, { kind: "pane-data", paneId: "pane-one", chunk: "one" } as ToCockpit);
+  fold(cockpit, { kind: "pane-data", paneId: "pane-two", chunk: "two" } as ToCockpit);
+  return cockpit;
+}
+
+/** The control carrying an action, in the page's own markup. Fails loudly rather than answering null. */
+function controlFor(page: Page, action: Action): ShimElement {
+  const found = page.root
+    .querySelectorAll("[data-action]")
+    .find((element) => element.attributes.get("data-action") === action);
+  if (found === undefined) {
+    throw new Error(`the view rendered no control for ${action}`);
+  }
+  return found;
+}
+
+/** A box in the block a control sits in, by the value it names. */
+function boxFor(page: Page, name: string): ShimInput {
+  const found = page.root
+    .querySelectorAll("[data-value]")
+    .find((element) => element.attributes.get("data-value") === name);
+  if (!(found instanceof ShimInput)) {
+    throw new Error(`the view rendered no box for ${name}`);
+  }
+  return found;
+}
+
+describe("a click becomes the gesture answerFor says it means", () => {
+  it("the parser sees every control the markup carries", () => {
+    // The guard that keeps every test below from passing over an empty tree. Counted against the raw
+    // string the view produced, so the shim cannot be quietly wrong about the one thing it is for.
+    const cockpit = showing(gateHalted());
+    fold(cockpit, { kind: "pane-data", paneId: String(DELEGATION), chunk: "building" } as ToCockpit);
+    const html = renderCockpit(cockpit);
+    const page = attached(cockpit);
+
+    const counted = (attribute: string): number => html.split(`${attribute}=`).length - 1;
+    expect(counted("data-action")).toBeGreaterThan(2);
+    expect(page.root.querySelectorAll("[data-action]")).toHaveLength(counted("data-action"));
+    expect(page.root.querySelectorAll("[data-value]")).toHaveLength(counted("data-value"));
+    expect(page.root.querySelectorAll("[data-pane]")).toHaveLength(counted("data-pane"));
+    // And the regions a redraw writes into are found by the same selectors `attach` uses.
+    for (const id of ["mission", "panes", "record", "screen-1"]) {
+      expect(page.root.querySelector(`#${id}`)).not.toBeNull();
+    }
+  });
+
+  it("sends the Gate approval, and it is exactly what answerFor makes of that control", () => {
+    const page = attached(showing(gateHalted()));
+
+    page.click(controlFor(page, "approve-gate"));
+
+    // Never a frame spelled out here: the assertion is that the wiring and the judgement agree, and the
+    // judgement is the module's own. A Command written by hand in this file would pass a severed wire
+    // only if the wire were severed in the same way twice.
+    const meant = answerFor("approve-gate", { gateId: String(GATE) }, page.at);
+    expect(page.sent).toEqual([meant.kind === "sends" ? meant.sent : undefined]);
+    // And it really is the Gate the halt names, read off the markup rather than from this test.
+    expect(boxFor(page, "gateId").value).toBe(String(GATE));
+  });
+
+  it("carries what a human typed into the box beside the control", () => {
+    const page = attached(showing(gateHalted()));
+    boxFor(page, "reason").value = "the survey missed the runtime";
+
+    page.click(controlFor(page, "revise-gate"));
+
+    const meant = answerFor(
+      "revise-gate",
+      { gateId: String(GATE), reason: "the survey missed the runtime" },
+      page.at,
+    );
+    expect(page.sent).toEqual([meant.kind === "sends" ? meant.sent : undefined]);
+  });
+
+  it("carries the amount typed into the Authorisation, in the notation a human types", () => {
+    const page = attached(showing(capHalted()));
+    boxFor(page, "amount").value = "R$ 30,00";
+
+    page.click(controlFor(page, "authorise-cap"));
+
+    const meant = answerFor("authorise-cap", { amount: "R$ 30,00" }, page.at);
+    expect(page.sent).toEqual([meant.kind === "sends" ? meant.sent : undefined]);
+    const submitted = page.sent[0];
+    if (submitted?.kind !== "submit" || submitted.command.kind !== "authorise-cap") {
+      throw new Error("an Authorisation is a submit");
+    }
+    // Pinned against the engine, because a view that reads its own numbers is a view with a rule.
+    expect(submitted.command.cap).toBe(moneyFromDecimal("30.00"));
+  });
+
+  it("names the Pane the Kill control sits in, and not another one", () => {
+    const page = attached(withPanes());
+
+    // The second Pane's control, so "the block it sits in" is a claim with two candidates. A fixture with
+    // one Pane could not tell "the Pane this control belongs to" from "the first Pane on the page".
+    const second = page.root
+      .querySelectorAll("[data-pane]")
+      .find((pane) => pane.attributes.get("data-pane") === "pane-two");
+    const killing = second?.querySelectorAll("[data-action]")[0];
+    if (killing === undefined) {
+      throw new Error("the second Pane rendered no Kill control");
+    }
+
+    page.click(killing);
+
+    const meant = answerFor("kill-pane", { paneId: "pane-two" }, page.at);
+    expect(page.sent).toEqual([meant.kind === "sends" ? meant.sent : undefined]);
+  });
+
+  it("wires every action the Cockpit renders, and nothing that is not a control", () => {
+    // The whole claim plant 7 measured: each rendered control reaches `send`. Driven over every rendering
+    // this view can produce, so an action added to `ACTIONS` with no wire fails here.
+    const answered = new Set<string>();
+    for (const cockpit of [showing(gateHalted()), showing(capHalted()), withPanes()]) {
+      const page = attached(cockpit);
+      for (const control of page.root.querySelectorAll("[data-action]")) {
+        const before = page.sent.length;
+        page.click(control);
+        expect(page.sent.length).toBe(before + 1);
+        answered.add(control.attributes.get("data-action") ?? "");
+      }
+    }
+    expect([...answered].sort()).toEqual([...ACTIONS].sort());
+  });
+
+  it("sends nothing for a click that is not on a control", () => {
+    const page = attached(showing(gateHalted()));
+    const question = page.root.querySelector(".question");
+    if (question === null) {
+      throw new Error("the Gate's question is drawn");
+    }
+
+    page.click(question);
+
+    expect(page.sent).toEqual([]);
+  });
+
+  it("sends nothing for an action no renderer emits, which is the only way one can arrive", () => {
+    // The one place this file writes markup: by construction it cannot come from a renderer, and
+    // `answerFor` answering `unknown` is what `attach` must not turn into a frame.
+    const page = attached(showing(gateHalted()));
+    page.root.innerHTML = `<button data-action="drop-the-database">Go on then</button>`;
+    const planted = page.root.querySelector("[data-action]");
+    if (planted === null) {
+      throw new Error("the planted control is there");
+    }
+
+    page.click(planted);
+
+    expect(answerFor("drop-the-database", {}, page.at).kind).toBe("unknown");
+    expect(page.sent).toEqual([]);
+  });
+});
+
+describe("a keypress reaches the Pane it was typed into", () => {
+  it("sends what keystrokesOf makes of the key, addressed to that Pane", () => {
+    const page = attached(withPanes());
+    const screen = page.root.querySelectorAll(".screen")[1];
+    if (screen === undefined) {
+      throw new Error("the second Pane has a screen");
+    }
+
+    const prevented = page.keydown(screen, "c", true, false);
+
+    expect(prevented).toBe(true);
+    expect(page.sent).toEqual([
+      { kind: "pane-write", paneId: "pane-two", keystrokes: keystrokesOf("c", true, false) },
+    ]);
+  });
+
+  it("leaves a key it does not map to the browser", () => {
+    const page = attached(withPanes());
+    const screen = page.root.querySelectorAll(".screen")[0];
+    if (screen === undefined) {
+      throw new Error("the first Pane has a screen");
+    }
+
+    expect(page.keydown(screen, "F5", false, false)).toBe(false);
+    expect(keystrokesOf("F5", false, false)).toBeUndefined();
+    expect(page.sent).toEqual([]);
+  });
+
+  it("ignores a keypress that did not land in a Pane", () => {
+    const page = attached(showing(gateHalted()));
+    const box = boxFor(page, "reason");
+
+    expect(page.keydown(box, "a", false, false)).toBe(false);
+    expect(page.sent).toEqual([]);
+  });
+});
+
+describe("a frame from the server redraws the region that moved", () => {
+  it("draws the Gate's question when the Mission halts at one", () => {
+    const page = attached(cockpitOf(6, 40, 50));
+    expect(page.root.querySelector("#mission")?.textContent).toContain("waiting for the Mission");
+
+    page.receives(missionMessage(gateHalted()));
+
+    const bar = page.root.querySelector("#mission");
+    expect(bar?.textContent).toContain("The Contract is signed. Carry on?");
+    expect(bar?.textContent).toContain("Approve");
+    // And the answer is live: the control the redraw wrote is the one a click now finds.
+    page.click(controlFor(page, "approve-gate"));
+    expect(page.sent).toHaveLength(1);
+  });
+
+  it("draws a Mission whose Halt was lost, instead of throwing in the socket listener — BUG-2", () => {
+    const page = attached(cockpitOf(6, 40, 50));
+
+    // The exact failure: the frame reaches `attach`'s redraw, `renderMission` calls `renderAnswers`, and
+    // `state.halt.reason` was read off `null`. The throw was *inside* the `message` handler, so nothing
+    // caught it and the region kept "waiting for the Mission" for ever.
+    expect(() => page.receives(missionMessage(haltLost()))).not.toThrow();
+
+    const bar = page.root.querySelector("#mission");
+    expect(bar?.textContent).toContain("Ship the Cockpit view");
+    expect(bar?.textContent).not.toContain("waiting for the Mission");
+    // A later frame still draws, which is the other half of what the throw cost.
+    page.receives(missionMessage(capHalted()));
+    expect(page.root.querySelector("#mission")?.textContent).toContain("The Cap has been reached");
+  });
+
+  it("writes a Pane's bytes into that Pane's screen and leaves the rest of the page alone", () => {
+    const page = attached(withPanes());
+    const bar = page.root.querySelector("#mission")?.textContent;
+
+    page.receives({ kind: "pane-data", paneId: "pane-one", chunk: "hello" } as ToCockpit);
+
+    expect(page.root.querySelector("#screen-1")?.textContent).toContain("hello");
+    expect(page.root.querySelector("#screen-2")?.textContent).not.toContain("hello");
+    expect(page.root.querySelector("#mission")?.textContent).toBe(bar);
+  });
+
+  it("draws a Decision the moment it is decided, Refusal and all", () => {
+    const page = attached(showing(running()));
+    const refused = submit(running(), {
+      kind: "decide-gate",
+      occurredAt: at(6),
+      gateId: GATE,
+      decision: { kind: "approved" },
+    });
+    const entry = refused[refused.length - 1];
+    if (entry === undefined || entry.decision.kind !== "refused") {
+      throw new Error("this fixture must produce a Refusal");
+    }
+
+    page.receives({ kind: "decided", entry });
+
+    const record = page.root.querySelector("#record")?.textContent ?? "";
+    expect(record).toContain("refused");
+    expect(record).toContain(entry.decision.refusal.violations[0] ?? "");
   });
 });
 
