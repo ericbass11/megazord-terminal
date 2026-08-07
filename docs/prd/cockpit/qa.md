@@ -43,7 +43,7 @@ WebSocket pane-kill                     a grandchild that traps HUP and TERM gon
 PATH without claude                     "Providers none on PATH / Not found claude, codex, gemini"
 ```
 
-And in this process, over the real transports, five concurrency scenarios plus a counter-arm — the pair
+And in this process, over the real transports, five concurrency scenarios plus a control arm — the pair
 `bin/mz.ts` calls real and ordinary, one `cockpitServer` and one `controlPlane` over one `missionWriter`.
 Every one of them is judged by the same reading, which is the strongest thing I built this pass:
 
@@ -218,7 +218,7 @@ Re-driven live, through the bridge this bugfix touched: `mission_create` accepte
 `pane_spawn` forking a `/bin/sh` whose parent pid is the `mz` process (read off `ps`, not claimed),
 `pane_read` answering what it wrote, `memory_write` attributed to `inner` and not to whoever forked it.
 A malformed call — `pane_spawn` with no `paneId` — came back as `-32602` with the missing field named,
-which is the closed schema doing its job.
+which is the closed schema doing what it is there to do.
 
 "The Cockpit reacts" is read as the techspec's verification plan words it — "a client calls `pane_spawn`
 and `handoff_submit` and both take effect" — and both do. The other reading, that the drawn Cockpit reacts,
@@ -266,7 +266,7 @@ pristine copy.
 
 | # | what I broke | what went red |
 | --- | --- | --- |
-| 1 | `missionWriter.record` runs with no queue at all | **5**: two in `mission-writer.test.ts`, two in `cockpit.e2e.test.ts`, and my own re-deciding reading, which reported `#6 delegate: file says accepted, re-deciding says refused`. The two "two doors" counter-arms stayed green, as they must |
+| 1 | `missionWriter.record` runs with no queue at all | **5**: two in `mission-writer.test.ts`, two in `cockpit.e2e.test.ts`, and my own re-deciding reading, which reported `#6 delegate: file says accepted, re-deciding says refused`. The two "two doors" control arms stayed green, as they must |
 | 2 | `missionWriter` builds a new writer on every ask, so a second queue can be made by asking twice | 1: `answers the same writer for the same store`. Nothing else — the memo is proven by identity alone, which is enough, because identity is what makes one queue |
 | 3 | `load` put inside the queue | **3**, two of them by timing out at 30s: a drive polling for a Handoff behind a write is the deadlock the module's design argues about. "Reading stays free" is load-bearing, not a preference |
 | 4 | `haltingGate` dereferences the Halt again — BUG-2 itself | 3, including `draws a Mission whose Halt was lost, instead of throwing in the socket listener — BUG-2` |
@@ -284,7 +284,7 @@ No plant stayed green. Plants 4, 5, 10, 11, 12 and 13 are the six readings the b
 every one of them is held by a test that fails when it is undone, which is what makes "swept the file" a
 measurement rather than a claim.
 
-## The shim, audited on its own terms
+## The shim, checked on its own terms
 
 A hand-written double is exactly what this repository warns can make tests pass because of it. Its three
 claims check out, and I looked for the fourth thing — where being permissive would hide a defect.
@@ -293,7 +293,7 @@ claims check out, and I looked for the fourth thing — where being permissive w
   registered, and it records what was sent. Every assertion about meaning compares against the module's own
   `answerFor`, `keystrokesOf` and `ACTIONS`, so a frame spelled out by hand cannot agree with a severed
   wire. Plant 7 is the proof: six of those tests fail when the wire goes.
-- **The markup is the view's.** The tree is parsed from `renderCockpit` output everywhere but one test,
+- **The markup is the view's.** The tree is parsed from what `renderCockpit` actually drew, everywhere but one test,
   which says at the point of use that it writes markup no renderer can emit — the case for an unknown
   control, which by construction cannot come from a renderer.
 - **The count guard is load-bearing**, and plant 9 is what says so: it fires before any other test in the
@@ -307,7 +307,7 @@ claims check out, and I looked for the fourth thing — where being permissive w
   then catches.
 
 Where it is unfaithful, and none of it can hide the class of defect it exists to catch: `scrollHeight`
-answers 0, so a scroll that does not follow output cannot be seen here; `innerHTML` has no getter, which is
+answers 0, so a scroll that does not follow what was drawn cannot be seen here; `innerHTML` has no getter, which is
 deliberate (a serialiser would be a rule of the shim's own); and `decodeEntities` is the exact inverse of
 `escapeHtml`, so a character `escapeHtml` fails to escape would be invisible to the shim as well — that one
 is worth knowing, and the escaping itself has its own tests.
@@ -388,7 +388,7 @@ throws when a box is missing, and plant 6 shows it. Worth a second floor if anyo
     nobody can make a second queue by asking twice, and `RunningCockpit.writer` hands the door to whoever
     composes a drive. But two `missionStore({workspace})` calls produce two doors with no warning of any
     kind — I checked: no `console.warn`, no `console.error`, two different writers. That is the declared
-    bound and the e2e keeps it as a counter-arm; it is worth knowing that nothing detects it.
+    bound and the e2e keeps it as a control arm; it is worth knowing that nothing detects it.
 
 ## The open item, and what it means
 
@@ -410,7 +410,7 @@ the Cockpit actually sees, and one remedy each.
 
 1. **A browser.** No DOM implementation and no browser binary is installed and `package.json` is outside
    what I may touch. "Reachable in a browser" is proven as far as the bytes a browser receives, and the
-   behaviour of those bytes is proven under the shim audited above. That is much better than the first
+   behaviour of those bytes is proven under the shim checked above. That is much better than the first
    pass had, and it is not a browser: layout, the stylesheet, markup parsing and event delivery are all the
    shim's rather than a vendor's.
 2. **A real Zord CLI.** `claude` is on this host's `PATH`, and there is no network and no account, so every

@@ -25,13 +25,13 @@ What closes it:
 - `cockpit/cockpit.e2e.test.ts > one door to the Mission file` — the composed product over real transports:
   two Zords' control planes, and a human at a WebSocket against a Zord at a control plane. Both were the
   pin that asserted the defect; both now assert the fix.
-- The counter-arm beside them, `does not order two stores over one Workspace`, which keeps the bound of the
+- The control arm beside them, `does not order two stores over one Workspace`, which keeps the bound of the
   fix measured rather than described.
 - QA's own five scenarios through the transports plus the running program, all judged by re-deciding every
   recorded Command against the state folded from the entries before it — `[]` through one door, and the lost
   update through two. See `qa.md` criterion 7.
 - Plant 1 of the second pass: with the queue taken away, 4 of the delivered tests and QA's own reading go
-  red, and the two counter-arms stay green.
+  red, and the two control arms stay green.
 
 ## BUG-2 — a Halt read off a damaged Mission file threw in the browser, and the Cockpit then drew nothing at all — **closed**
 
