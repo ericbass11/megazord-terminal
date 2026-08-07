@@ -510,10 +510,11 @@ describe("the view, over HTTP (criterion 1)", () => {
     expect(await (await fetch(`${server.url}index.html`)).text()).toBe(VIEW);
     expect(await (await fetch(`${server.url}?anything=1`)).text()).toBe(VIEW);
 
+    // `/xterm.js` is not a route this server answers — the bundle lives under `XTERM_PATH`
+    // (`/xterm/xterm.js`), proven in its own describe block below. This 404 says a bare `/xterm.js`
+    // is nothing here, exactly as any other unknown path is.
     const missing = await fetch(`${server.url}xterm.js`);
     expect(missing.status).toBe(404);
-    // Declared Gap 1: one document, no assets. The 404 says so out loud rather than serving the view
-    // under every path, which would make a missing asset look like a broken script.
     expect(await missing.text()).toContain("/xterm.js");
 
     const posted = await fetch(server.url, { method: "POST", body: "{}" });
@@ -528,6 +529,66 @@ describe("the view, over HTTP (criterion 1)", () => {
     expect(answered.status).toBe(200);
     expect(answered.headers.get("content-length")).toBe(String(Buffer.byteLength(VIEW, "utf8")));
     expect(await answered.text()).toBe("");
+  });
+});
+
+/* -------------------------------------------------------------------------------------------------
+ * The xterm.js route, added by Task 10
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("the xterm.js route", () => {
+  const XTERM = { js: "/* the js bundle */", css: "/* the css bundle */" };
+
+  it("serves the bundle and the stylesheet it was given, same-origin, with the right content types", async () => {
+    const { server } = await cockpit({ xterm: XTERM });
+
+    const js = await fetch(`${server.url}xterm/xterm.js`);
+    expect(js.status).toBe(200);
+    expect(js.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+    expect(js.headers.get("cache-control")).toBe("no-store");
+    expect(await js.text()).toBe(XTERM.js);
+
+    const css = await fetch(`${server.url}xterm/xterm.css`);
+    expect(css.status).toBe(200);
+    expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    expect(await css.text()).toBe(XTERM.css);
+  });
+
+  it("answers 404 at both paths when no bundle was given, exactly as an unknown path does", async () => {
+    const { server } = await cockpit();
+
+    expect((await fetch(`${server.url}xterm/xterm.js`)).status).toBe(404);
+    expect((await fetch(`${server.url}xterm/xterm.css`)).status).toBe(404);
+  });
+
+  it("answers 404 for a third path under XTERM_PATH, because only two files exist there", async () => {
+    const { server } = await cockpit({ xterm: XTERM });
+
+    expect((await fetch(`${server.url}xterm/`)).status).toBe(404);
+    expect((await fetch(`${server.url}xterm/anything-else.js`)).status).toBe(404);
+  });
+
+  it("answers 405 for a POST, the same as every other GET-only path", async () => {
+    const { server } = await cockpit({ xterm: XTERM });
+
+    const posted = await fetch(`${server.url}xterm/xterm.js`, { method: "POST", body: "x" });
+    expect(posted.status).toBe(405);
+  });
+
+  it("serves the real, installed @xterm/xterm bundle when it is what a caller reads and hands in", async () => {
+    // The one place this test reaches past a fixture: `cockpit/view.ts`'s own reader, proving the route
+    // and the reader agree about what "the xterm.js bundle" means, not only that the route can serve two
+    // strings.
+    const { xtermAssets } = await import("./view");
+    const real = await xtermAssets();
+    const { server } = await cockpit({ xterm: real });
+
+    const served = await fetch(`${server.url}xterm/xterm.js`);
+    const body = await served.text();
+    expect(body).toBe(real.js);
+    expect(body.length).toBeGreaterThan(100_000);
+    // The installed package's own class, present verbatim in the bytes served.
+    expect(body).toContain("Terminal");
   });
 });
 

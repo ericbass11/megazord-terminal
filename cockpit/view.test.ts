@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { Terminal } from "@xterm/xterm";
 
 import {
   EMPTY_REPLAY,
@@ -54,9 +55,9 @@ import { missionStore } from "../runtime/mission-store";
 import { missionWriter } from "../runtime/mission-writer";
 import type { PaneId, PaneManager, PaneStatus } from "../runtime/pane-manager";
 
-import { cockpitServer, type CockpitServer } from "./server";
+import { cockpitServer, XTERM_PATH, type CockpitServer } from "./server";
 import type { ToCockpit } from "./protocol";
-import { SCREEN, UnservableViewError, clientScript, cockpitView, documentOf } from "./view";
+import { SCREEN, UnservableViewError, clientScript, cockpitView, documentOf, xtermAssets } from "./view";
 import { STYLE, TOKENS } from "./view/style";
 import * as client from "./view/client";
 
@@ -171,6 +172,8 @@ async function cockpit(recorded: Replay): Promise<CockpitServer> {
 type Driven = {
   /** The browser's Cockpit, folded from real frames by the real client. */
   readonly cockpit: client.Cockpit;
+  /** Every terminal the real client built, in the order its Panes were first heard from. */
+  readonly terminals: readonly Terminal[];
   send(sent: unknown): void;
   /** The first message satisfying `wanted`, waiting for it to arrive. */
   next(wanted: (said: ToCockpit) => boolean): Promise<ToCockpit>;
@@ -179,7 +182,14 @@ type Driven = {
 async function driving(server: CockpitServer): Promise<Driven> {
   const socket = new WebSocket(`ws://127.0.0.1:${server.port}/`);
   const said: ToCockpit[] = [];
-  const held = client.cockpitOf(SCREEN.rows, SCREEN.cols, SCREEN.maxScrollback);
+  const terminals: Terminal[] = [];
+  // The real `@xterm/xterm` package, exactly as the browser would build it — construction touches no
+  // DOM (`client.ts`'s module doc), and this helper never calls `attach`, so `.open()` is never reached.
+  const held = client.cockpitOf(SCREEN.rows, SCREEN.cols, SCREEN.maxScrollback, (rows, cols, scrollback) => {
+    const terminal = new Terminal({ rows, cols, scrollback });
+    terminals.push(terminal);
+    return terminal;
+  });
 
   socket.addEventListener("message", (event: MessageEvent) => {
     const data: unknown = event.data;
@@ -197,6 +207,7 @@ async function driving(server: CockpitServer): Promise<Driven> {
 
   return {
     cockpit: held,
+    terminals,
     send(sent: unknown): void {
       socket.send(JSON.stringify(sent));
     },
@@ -263,7 +274,7 @@ describe("the one string the server serves", () => {
     expect(view).toContain("<style>");
   });
 
-  it("asks the browser for nothing: no CDN, no asset, no font, no second route", async () => {
+  it("asks the browser for nothing external: no CDN, no asset off this server, no font", async () => {
     // `CLAUDE.md` records that this product builds and renders with no network. A CDN would break that
     // in the one place nobody looks, so the check is on the document rather than on anybody's intent.
     //
@@ -272,9 +283,13 @@ describe("the one string the server serves", () => {
     // `<script src="https://…">` is ruled out, so a raw scan fails on the file that documents the rule
     // — exactly as a raw scan for `any` fails on the 29 doc comments in `engine/` that discuss it. Add
     // any of these on a line of code and this fires; keep writing prose about CDNs and it does not.
+    //
+    // `<script src` and `<link ` are checked separately, below: Task 10 gave this document exactly one
+    // of each, both same-origin, both asserted to name `XTERM_PATH` and nothing else. "No CDN" was
+    // always about fetching nothing **external**, never about fetching nothing at all — `view/client.ts`
+    // says so in its own "xterm.js is here now" section, so a future scan of this file over a `<script
+    // src` hit should read that section before assuming a regression.
     for (const construct of [
-      "<script src",
-      "<link ",
       "<img ",
       "<iframe",
       "@import",
@@ -287,6 +302,18 @@ describe("the one string the server serves", () => {
     ]) {
       expect({ construct, on: await codeLinesOfView(construct) }).toEqual({ construct, on: [] });
     }
+  });
+
+  it("references only same-origin assets: the xterm.js bundle and its stylesheet, never a CDN", async () => {
+    const scriptSrc = await codeLinesOfView("<script src");
+    expect(scriptSrc).toHaveLength(1);
+    expect(scriptSrc[0]).toContain(`src="${XTERM_PATH}/xterm.js"`);
+    expect(scriptSrc[0]).not.toMatch(/src="(https?:)?\/\//u);
+
+    const link = await codeLinesOfView("<link ");
+    expect(link).toHaveLength(1);
+    expect(link[0]).toContain(`href="${XTERM_PATH}/xterm.css"`);
+    expect(link[0]).not.toMatch(/href="(https?:)?\/\//u);
   });
 
   it("opens exactly one connection, and it is the page's own origin", async () => {
@@ -327,7 +354,15 @@ describe("the one string the server serves", () => {
 
   it("draws the Pane grid at the size the document says it does", async () => {
     const view = await cockpitView();
-    expect(view).toContain(`cockpitOf(${SCREEN.rows}, ${SCREEN.cols}, ${SCREEN.maxScrollback})`);
+    expect(view).toContain(`cockpitOf(${SCREEN.rows}, ${SCREEN.cols}, ${SCREEN.maxScrollback}, `);
+  });
+
+  it("builds every Pane's terminal from the global the xterm.js script left behind", async () => {
+    const view = await cockpitView();
+    // The bootstrap is untyped JavaScript (view.ts's declared Gap 1), so this is a text match rather
+    // than an imported function — the same standard "exports every name the bootstrap calls" already
+    // holds this file to.
+    expect(view).toContain("new Terminal({ rows, cols, scrollback })");
   });
 });
 
@@ -345,10 +380,15 @@ describe("the stylesheet reuses the site's palette rather than inventing one", (
     }
   });
 
-  it("uses the site's own mono stack and its caret animation", () => {
+  it("uses the site's own mono stack", () => {
     expect(STYLE).toContain(`ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono"`);
-    expect(STYLE).toContain("@keyframes blink");
-    expect(STYLE).toContain(".caret");
+  });
+
+  it("carries no caret of its own any more, because xterm.js draws a real terminal's cursor", () => {
+    // Task 6's `.caret`/`blink` drew the hand-rolled emulator's cursor and neither exists now — a rule
+    // nothing emits would be exactly the dead CSS `cockpit/view/style.ts`'s module doc argues against.
+    expect(STYLE).not.toContain("@keyframes blink");
+    expect(STYLE).not.toContain(".caret");
   });
 });
 
@@ -372,17 +412,30 @@ describe("what the browser runs is what these tests drive", () => {
     expect(here.length).toBeGreaterThan(20);
   });
 
-  it("answers a terminal stream identically", async () => {
+  it("builds a Pane's terminal through the same injected factory, and writes the same bytes to it", async () => {
     const browser = await shipped();
     const chunk = `plain \u001b[1;31mbold red\u001b[0m\r\nnext\ttab`;
 
-    const mine = client.screenOf(6, 40, 20);
-    const theirs = browser.screenOf(6, 40, 20);
-    client.feed(mine, chunk);
-    browser.feed(theirs, chunk);
+    // There is no pure `feed`/`Screen` pair left to compare any more — `xterm.js` owns turning bytes
+    // into a screen, and that is proven directly against the real library in `client.test.ts`'s "xterm.js
+    // actually renders". What this file can still prove is that the **shipped** script drives the same
+    // `terminalOf(...)` and the same `write` call the local module does, byte for byte.
+    const mineWrites: string[] = [];
+    const mine = client.cockpitOf(6, 40, 20, () => ({
+      write: (data: string) => mineWrites.push(data),
+      open: () => undefined,
+    }));
+    const theirsWrites: string[] = [];
+    const theirs = browser.cockpitOf(6, 40, 20, () => ({
+      write: (data: string) => theirsWrites.push(data),
+      open: () => undefined,
+    }));
 
-    expect(browser.textOf(theirs)).toBe(client.textOf(mine));
-    expect(browser.htmlOfScreen(theirs)).toBe(client.htmlOfScreen(mine));
+    client.fold(mine, { kind: "pane-data", paneId: "a", chunk } as ToCockpit);
+    browser.fold(theirs, { kind: "pane-data", paneId: "a", chunk } as ToCockpit);
+
+    expect(theirsWrites).toEqual(mineWrites);
+    expect(mineWrites).toEqual([chunk]);
   });
 
   it("answers money and keystrokes identically", async () => {
@@ -418,8 +471,12 @@ describe("what the browser runs is what these tests drive", () => {
     const state = stateOf(recorded);
     const message = { kind: "mission", state } as ToCockpit;
 
-    const mine = client.cockpitOf(6, 40, 20);
-    const theirs = browser.cockpitOf(6, 40, 20);
+    // Never called: this message carries no Pane, so nothing here builds a terminal.
+    const noTerminal = (): never => {
+      throw new Error("this fixture folds no Pane, so nothing should ever ask for a terminal");
+    };
+    const mine = client.cockpitOf(6, 40, 20, noTerminal);
+    const theirs = browser.cockpitOf(6, 40, 20, noTerminal);
     client.fold(mine, message);
     browser.fold(theirs, message);
 
@@ -468,8 +525,11 @@ describe("criterion 6, over the real server: a Gate halts the Mission and a huma
 
     await driven.next((said) => said.kind === "mission" && said.state.status === "running");
     expect(driven.cockpit.state?.status).toBe("running");
-    // And the answer offered a moment ago is gone, because nothing is waiting any more.
-    expect(client.renderAnswers(driven.cockpit)).toBe("");
+    // The Gate's own answer is gone, because nothing is waiting on it any more — Kill is still offered,
+    // because the Mission is still running.
+    const answers = client.renderAnswers(driven.cockpit);
+    expect(answers).not.toContain("A Gate is open");
+    expect(answers).toContain(`data-action="kill-mission"`);
   });
 
   it("records the resumption on disk, so the Mission is resumed and not merely redrawn", async () => {
@@ -590,7 +650,10 @@ describe("criterion 7, over the real server: the Cap halts and nothing is commis
         said.entry.decision.kind === "accepted",
     );
     expect(commissioned.kind).toBe("decided");
-    expect(client.renderAnswers(driven.cockpit)).toBe("");
+    // The Cap's own answer is gone; Kill is still offered while the Mission runs.
+    const answers = client.renderAnswers(driven.cockpit);
+    expect(answers).not.toContain("The Cap has been reached");
+    expect(answers).toContain(`data-action="kill-mission"`);
   });
 
   it("shows the Refusal when the amount typed is not an amount, rather than judging it in the browser", async () => {
@@ -638,12 +701,18 @@ describe("a Pane's bytes reach the view", () => {
     await driven.next((said) => said.kind === "pane-data");
 
     const pane = driven.cockpit.panes[0];
-    if (pane === undefined) {
+    const terminal = driven.terminals[0];
+    if (pane === undefined || terminal === undefined) {
       throw new Error("a Pane opened when it spoke");
     }
-    expect(client.textOf(pane.screen)).toBe("building\ndone");
+    // `write` is asynchronous inside `@xterm/xterm` — flushed with a trailing no-op write, exactly as
+    // `client.test.ts`'s "xterm.js actually renders" does.
+    await new Promise<void>((resolve) => terminal.write("", resolve));
+    expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe("building");
+    expect(terminal.buffer.active.getLine(1)?.translateToString(true)).toBe("done");
     // The Pane is named after the Delegation, so the provider is that Delegation's resolved CLI.
     expect(client.providerFor(driven.cockpit.state, pane.paneId)).toBe("codex");
+    expect(client.renderPane(driven.cockpit, pane)).toContain("codex");
     expect(client.renderPane(driven.cockpit, pane)).toContain("codex");
   });
 });

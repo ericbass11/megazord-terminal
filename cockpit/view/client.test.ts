@@ -46,6 +46,8 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { Terminal } from "@xterm/xterm";
+
 import {
   EMPTY_REPLAY,
   briefing,
@@ -89,11 +91,10 @@ import {
   cockpitOf,
   delegationFor,
   escapeHtml,
-  feed,
   fold,
   haltingGate,
-  htmlOfScreen,
   keystrokesOf,
+  killable,
   providerFor,
   refusedIn,
   renderAnswers,
@@ -104,12 +105,13 @@ import {
   renderPane,
   renderPanes,
   renderRecord,
-  screenOf,
   spentOn,
   stoppedAtCap,
-  textOf,
   type Action,
   type Cockpit,
+  type PaneReading,
+  type TerminalFactory,
+  type TerminalLike,
 } from "./client";
 
 /* -------------------------------------------------------------------------------------------------
@@ -199,9 +201,58 @@ function missionMessage(recorded: Replay): ToCockpit {
     : { kind: "mission", state };
 }
 
+/* -------------------------------------------------------------------------------------------------
+ * A terminal-shaped fake, with no rules of its own
+ *
+ * `TerminalLike` is a structural type this file never asks `@xterm/xterm` to satisfy for the ordinary
+ * wiring tests below: `write` records what it was handed, `open` records the container and does nothing
+ * to it. It forms no opinion about either, exactly as `recordedPanes()` in `server.test.ts` forms none —
+ * judging what a click means is `answerFor`'s, and a fake with rules of its own is a second rule set a
+ * test would start passing because of. The one test in this file that needs a real terminal's own
+ * behaviour ("xterm.js actually renders") uses the real `@xterm/xterm` package directly instead.
+ * ---------------------------------------------------------------------------------------------- */
+
+type FakeTerminal = TerminalLike & {
+  readonly written: string[];
+  readonly opened: HTMLElement[];
+};
+
+function fakeTerminal(): FakeTerminal {
+  const written: string[] = [];
+  const opened: HTMLElement[] = [];
+  return {
+    written,
+    opened,
+    write(data: string): void {
+      written.push(data);
+    },
+    open(container: HTMLElement): void {
+      opened.push(container);
+    },
+  };
+}
+
+/** The factory most fixtures use, when nothing needs to inspect what a terminal was told. */
+function fakeTerminalOf(): TerminalFactory {
+  return () => fakeTerminal();
+}
+
+/** A factory that remembers every terminal it built, in the order Panes were first heard from. */
+function trackedTerminals(): { readonly terminalOf: TerminalFactory; readonly built: FakeTerminal[] } {
+  const built: FakeTerminal[] = [];
+  return {
+    terminalOf: () => {
+      const terminal = fakeTerminal();
+      built.push(terminal);
+      return terminal;
+    },
+    built,
+  };
+}
+
 /** A Cockpit holding one `mission` message, which is what a freshly connected tab holds. */
-function showing(recorded: Replay): Cockpit {
-  const cockpit = cockpitOf(6, 40, 50);
+function showing(recorded: Replay, terminalOf: TerminalFactory = fakeTerminalOf()): Cockpit {
+  const cockpit = cockpitOf(6, 40, 50, terminalOf);
   fold(cockpit, missionMessage(recorded));
   return cockpit;
 }
@@ -218,122 +269,73 @@ function stateIn(cockpit: Cockpit): Mission {
 const ESC = "\u001b";
 
 /* -------------------------------------------------------------------------------------------------
- * The terminal
+ * xterm.js actually renders
+ *
+ * The one test in this file that imports `@xterm/xterm` directly rather than the fake: `write` and the
+ * buffer it fills need no DOM at all (`new Terminal(...)` builds a parser and a buffer, nothing more —
+ * see `client.ts`'s module doc), so this is real, headless, and proves the pipeline the rest of this file
+ * fakes: `fold`'s `pane-data` case really does call `TerminalLike.write`, and what lands in a real
+ * terminal's buffer is what a real terminal would show for the bytes a Zord CLI actually writes — plain
+ * text, an SGR colour, a cursor move.
+ *
+ * `write` is asynchronous inside `@xterm/xterm` — a chunk is parsed off a queue, not synchronously
+ * inside the call — so this flushes with a trailing no-op write and its callback, which fires only once
+ * every write queued before it (here, the one `fold` made) has been processed. That is documented
+ * behaviour of the library, not a race this test happens to win.
  * ---------------------------------------------------------------------------------------------- */
 
-describe("the terminal, which is here because xterm.js could not be", () => {
-  it("writes what a process wrote, line by line", () => {
-    const screen = screenOf(4, 20, 10);
-    feed(screen, "first\r\nsecond\r\nthird");
-    expect(textOf(screen)).toBe("first\nsecond\nthird");
+describe("xterm.js actually renders", () => {
+  async function flush(terminal: Terminal): Promise<void> {
+    await new Promise<void>((resolve) => {
+      terminal.write("", resolve);
+    });
+  }
+
+  it("shows plain text, a colour and a cursor move exactly as a real terminal would", async () => {
+    const built: Terminal[] = [];
+    const cockpit = cockpitOf(6, 40, 50, (rows, cols, scrollback) => {
+      const terminal = new Terminal({ rows, cols, scrollback });
+      built.push(terminal);
+      return terminal;
+    });
+
+    // Plain text, an SGR colour (31 = red), and a cursor move to row 3 col 5 — one chunk, through the
+    // fold, exactly the way a Pane's bytes arrive off the WebSocket.
+    fold(cockpit, {
+      kind: "pane-data",
+      paneId: "pane-one",
+      chunk: `hello\r\n${ESC}[31mred${ESC}[0m${ESC}[3;5Hx`,
+    } as ToCockpit);
+
+    const terminal = built[0];
+    if (terminal === undefined) {
+      throw new Error("a Pane's terminal is built when it is first heard from");
+    }
+    await flush(terminal);
+
+    expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe("hello");
+    const redLine = terminal.buffer.active.getLine(1);
+    expect(redLine?.translateToString(true)).toBe("red");
+    expect(redLine?.getCell(0)?.isFgPalette()).toBe(true);
+    expect(redLine?.getCell(0)?.getFgColor()).toBe(1); // ANSI red is palette index 1
+    // Row 3 (index 2), column 5 (index 4): the `x` written after the cursor move.
+    expect(terminal.buffer.active.getLine(2)?.translateToString(true).charAt(4)).toBe("x");
   });
 
-  it("moves the cursor to the left margin on a carriage return, which is how a spinner redraws", () => {
-    const screen = screenOf(3, 20, 10);
-    feed(screen, "working...\rdone");
-    expect(textOf(screen)).toBe("doneing...");
-  });
+  it("builds one terminal per Pane, sized from what cockpitOf was given", () => {
+    const built: Terminal[] = [];
+    const cockpit = cockpitOf(6, 40, 50, (rows, cols, scrollback) => {
+      const terminal = new Terminal({ rows, cols, scrollback });
+      built.push(terminal);
+      return terminal;
+    });
 
-  it("backspaces, and never past the left margin", () => {
-    const screen = screenOf(3, 20, 10);
-    feed(screen, "abc\b\b\b\b\bZ");
-    expect(textOf(screen)).toBe("Zbc");
-  });
+    fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "x" } as ToCockpit);
+    fold(cockpit, { kind: "pane-data", paneId: "b", chunk: "y" } as ToCockpit);
 
-  it("advances a tab to the next multiple of eight", () => {
-    const screen = screenOf(3, 40, 10);
-    feed(screen, "ab\tc");
-    expect(textOf(screen)).toBe("ab      c");
-  });
-
-  it("wraps at the right margin rather than losing the character", () => {
-    const screen = screenOf(4, 5, 10);
-    feed(screen, "abcdefgh");
-    expect(textOf(screen)).toBe("abcde\nfgh");
-  });
-
-  it("scrolls into bounded scrollback once the screen is full", () => {
-    const screen = screenOf(2, 10, 1);
-    feed(screen, "one\r\ntwo\r\nthree\r\nfour");
-    // rows 2, scrollback 1: "one" has fallen off the top entirely.
-    expect(textOf(screen)).toBe("two\nthree\nfour");
-  });
-
-  it("keeps an escape sequence split across two chunks, because a pty splits where it likes", () => {
-    const screen = screenOf(3, 20, 10);
-    feed(screen, `red: ${ESC}[3`);
-    feed(screen, "1mDANGER");
-    expect(textOf(screen)).toBe("red: DANGER");
-    expect(htmlOfScreen(screen)).toContain("#ff3b30");
-  });
-
-  it("never prints the bytes of a sequence it does not implement", () => {
-    const screen = screenOf(3, 30, 10);
-    // Alternate screen buffer, bracketed paste, a scroll region: all consumed, none implemented.
-    feed(screen, `${ESC}[?1049h${ESC}[?2004htext${ESC}[1;3r`);
-    expect(textOf(screen)).toBe("text");
-  });
-
-  it("drops a pending sequence that is not one, rather than growing without bound", () => {
-    const screen = screenOf(3, 20, 10);
-    feed(screen, `${ESC}[${"1;".repeat(4000)}`);
-    expect(screen.pending).toBe("");
-    feed(screen, "after");
-    expect(textOf(screen)).toBe("after");
-  });
-
-  it("colours a run in the site's palette, and one span carries the whole run", () => {
-    const screen = screenOf(2, 20, 10);
-    feed(screen, `${ESC}[34mblue${ESC}[0m.`);
-    const html = htmlOfScreen(screen);
-    // --color-scout, the blue app/globals.css already declares.
-    expect(html).toContain(`<span style="color:#2e8cff">blue</span>`);
-  });
-
-  it("resolves the 256-colour cube rather than dropping the colour", () => {
-    const screen = screenOf(2, 20, 10);
-    feed(screen, `${ESC}[38;5;196mX`);
-    // 196 = 16 + 36*5 + 6*0 + 0 → (255, 0, 0).
-    expect(htmlOfScreen(screen)).toContain("color:#ff0000");
-  });
-
-  it("erases to the end of a line, which is how a progress line is rewritten", () => {
-    const screen = screenOf(2, 20, 10);
-    feed(screen, `100 percent done\r${ESC}[K5`);
-    expect(textOf(screen)).toBe("5");
-  });
-
-  it("erases the whole display, which is what `clear` sends", () => {
-    const screen = screenOf(3, 20, 10);
-    feed(screen, `noise\r\nmore${ESC}[2J${ESC}[Hfresh`);
-    expect(textOf(screen)).toBe("fresh");
-  });
-
-  it("positions the cursor within the screen and clamps what would leave it", () => {
-    const screen = screenOf(3, 10, 10);
-    feed(screen, `${ESC}[99;99Hx`);
-    expect(textOf(screen).split("\n")).toEqual(["", "", "         x"]);
-  });
-
-  it("takes a title from an OSC sequence and prints none of it", () => {
-    const screen = screenOf(2, 20, 10);
-    feed(screen, `${ESC}]0;claude — building\u0007ready`);
-    expect(screen.title).toBe("claude — building");
-    expect(textOf(screen)).toBe("ready");
-  });
-
-  it("escapes what a process wrote, so a Zord printing markup cannot write the page", () => {
-    const screen = screenOf(2, 40, 10);
-    feed(screen, `<img src=x onerror="boom">`);
-    const html = htmlOfScreen(screen);
-    expect(html).not.toContain("<img");
-    expect(html).toContain("&lt;img src=x onerror=&quot;boom&quot;&gt;");
-  });
-
-  it("draws a caret at the cursor", () => {
-    const screen = screenOf(2, 10, 10);
-    feed(screen, "hi");
-    expect(htmlOfScreen(screen)).toContain(`<span class="caret"`);
+    expect(built).toHaveLength(2);
+    expect(built[0]?.rows).toBe(6);
+    expect(built[0]?.cols).toBe(40);
   });
 });
 
@@ -379,33 +381,35 @@ describe("money in the browser, pinned against the engine", () => {
 
 describe("folding what the server sends", () => {
   it("opens a Pane on the first thing it says, in the order it was heard from", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     fold(cockpit, { kind: "pane-data", paneId: "b", chunk: "hello" } as ToCockpit);
     fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "hi" } as ToCockpit);
     expect(cockpit.panes.map((pane) => pane.paneId)).toEqual(["b", "a"]);
     expect(cockpit.panes.map((pane) => pane.ordinal)).toEqual([1, 2]);
   });
 
-  it("streams a Pane's bytes onto that Pane's screen and no other", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+  it("writes a Pane's bytes to that Pane's terminal and no other", () => {
+    const { terminalOf, built } = trackedTerminals();
+    const cockpit = cockpitOf(4, 20, 10, terminalOf);
     fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "for a" } as ToCockpit);
     fold(cockpit, { kind: "pane-data", paneId: "b", chunk: "for b" } as ToCockpit);
-    expect(textOf(cockpit.panes[0]!.screen)).toBe("for a");
-    expect(textOf(cockpit.panes[1]!.screen)).toBe("for b");
+    expect(built[0]?.written).toEqual(["for a"]);
+    expect(built[1]?.written).toEqual(["for b"]);
   });
 
-  it("reports a screen change as a screen change, so a chunk does not rebuild the page", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+  it("reports a new Pane as a grid change, and an existing one's bytes as nothing to redraw", () => {
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
+    // A new Pane needs its shell built and its terminal opened — `attach`'s job.
     expect(fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "x" } as ToCockpit)).toEqual({
       kind: "panes",
     });
-    expect(fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "y" } as ToCockpit)?.kind).toBe(
-      "pane-screen",
-    );
+    // The same Pane again: the bytes went straight to its terminal, which repaints on its own schedule,
+    // so there is nothing left for a redraw to do.
+    expect(fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "y" } as ToCockpit)).toBeUndefined();
   });
 
   it("starts a Pane at starting, which is what the process table announces for one that is silent", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "x" } as ToCockpit);
     expect(cockpit.panes[0]?.status).toBe("starting");
   });
@@ -419,7 +423,7 @@ describe("folding what the server sends", () => {
       "failed",
       "killed",
     ];
-    const cockpit = cockpitOf(4, 20, 10);
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     for (const status of statuses) {
       fold(cockpit, { kind: "pane-status", paneId: "a", status } as ToCockpit);
       expect(cockpit.panes[0]?.status).toBe(status);
@@ -433,14 +437,14 @@ describe("folding what the server sends", () => {
   });
 
   it("holds no Meter for a Mission nobody opened, rather than a zero one", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     fold(cockpit, missionMessage(EMPTY_REPLAY));
     expect(stateIn(cockpit).status).toBe("unopened");
     expect(cockpit.meter).toBeUndefined();
   });
 
   it("bounds the record, dropping the oldest rather than growing without end", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     const entry = (n: number): ToCockpit => ({
       kind: "decided",
       entry: {
@@ -456,7 +460,7 @@ describe("folding what the server sends", () => {
   });
 
   it("ignores a message that says nothing, rather than throwing inside a browser tab", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     for (const rubbish of [
       null,
       "a string",
@@ -491,9 +495,14 @@ describe("criterion 6: a Gate halts the Mission in the Cockpit and a human answe
     expect(html).toContain(`value="${GATE}"`);
   });
 
-  it("offers nothing while the Mission is running, so there is no inert control to press", () => {
-    expect(renderAnswers(showing(running()))).toBe("");
+  it("offers no Gate or Cap answer while the Mission is running, so there is no inert control to press", () => {
+    const html = renderAnswers(showing(running()));
+    expect(html).not.toContain("A Gate is open");
+    expect(html).not.toContain("The Cap has been reached");
     expect(haltingGate(stateIn(showing(running())))).toBeUndefined();
+    // Kill is not one of the two situational answers: it is offered whenever the Mission is running,
+    // which this one is — see the Kill describe block below.
+    expect(html).toContain(`data-action="kill-mission"`);
   });
 
   it("emits an approval the engine accepts, and the Mission is running again", () => {
@@ -588,7 +597,10 @@ describe("criterion 6: a Gate halts the Mission in the Cockpit and a human answe
       throw new Error("the Gate answer is not a submit");
     }
     const cockpit = showing(submit(recorded, answer.sent.command));
-    expect(renderAnswers(cockpit)).toBe("");
+    const html = renderAnswers(cockpit);
+    expect(html).not.toContain("A Gate is open");
+    // Running again, and Kill is still offered — answering a Gate does not end the Mission.
+    expect(html).toContain(`data-action="kill-mission"`);
   });
 
   it("sends a blank revision rather than judging it, and the engine's Refusal is what a human reads", () => {
@@ -792,7 +804,7 @@ describe("a Refusal is rendered, with its reason and every violation", () => {
   });
 
   it("says so when nothing has been decided yet, rather than showing an empty box", () => {
-    expect(renderRecord(cockpitOf(4, 20, 10))).toContain("nothing has been decided");
+    expect(renderRecord(cockpitOf(4, 20, 10, fakeTerminalOf()))).toContain("nothing has been decided");
   });
 });
 
@@ -840,18 +852,21 @@ describe("a Pane shows its status, its provider and what it has cost", () => {
   });
 
   it("draws every Pane it has heard from, each with its own screen element", () => {
-    const cockpit = showing(running());
+    const { terminalOf, built } = trackedTerminals();
+    const cockpit = showing(running(), terminalOf);
     fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "one" } as ToCockpit);
     fold(cockpit, { kind: "pane-data", paneId: "b", chunk: "two" } as ToCockpit);
     const html = renderPanes(cockpit);
     expect(html).toContain(`id="screen-1"`);
     expect(html).toContain(`id="screen-2"`);
-    expect(html).toContain("one");
-    expect(html).toContain("two");
+    // The markup carries an *empty* mount point now — the bytes went straight to the terminal, which
+    // is `xterm.js`'s to paint, not this function's to draw as text.
+    expect(built[0]?.written).toEqual(["one"]);
+    expect(built[1]?.written).toEqual(["two"]);
   });
 
   it("says so when no Pane has opened, rather than drawing an empty grid", () => {
-    expect(renderPanes(cockpitOf(4, 20, 10))).toContain("no Pane has opened yet");
+    expect(renderPanes(cockpitOf(4, 20, 10, fakeTerminalOf()))).toContain("no Pane has opened yet");
   });
 
   it("escapes a PaneId, so an id cannot write attributes into the markup", () => {
@@ -879,8 +894,8 @@ describe("the Mission bar carries the Meter", () => {
   });
 
   it("says a Mission is waited for before the first message, and unopened after it", () => {
-    expect(renderMission(cockpitOf(4, 20, 10))).toContain("waiting for the Mission");
-    const cockpit = cockpitOf(4, 20, 10);
+    expect(renderMission(cockpitOf(4, 20, 10, fakeTerminalOf()))).toContain("waiting for the Mission");
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     fold(cockpit, missionMessage(EMPTY_REPLAY));
     expect(renderMission(cockpit)).toContain("unopened");
   });
@@ -1105,13 +1120,19 @@ describe("a Halt no rule validated is read, never dereferenced", () => {
     expect(isOpened(state) ? state.gates.length : 0).toBe(1);
   });
 
-  it("draws the whole Cockpit anyway — the bar, the Meter and the record — and offers no answer", () => {
+  it("draws the whole Cockpit anyway — the bar, the Meter and the record — and offers no Gate or Cap answer", () => {
     const cockpit = showing(haltLost());
     const html = renderCockpit(cockpit);
 
     expect(html).toContain(escapeHtml("Ship the Cockpit view"));
     expect(html).toContain(formatMoney(moneyFromDecimal("10.00")));
-    expect(renderAnswers(cockpit)).toBe("");
+    const answers = renderAnswers(cockpit);
+    expect(answers).not.toContain("A Gate is open");
+    expect(answers).not.toContain("The Cap has been reached");
+    // What Kill does not need is *why* the Mission stopped: `killable` reads only `status`, which
+    // survived the damage even though `halt` did not — so a human stuck behind an unreadable Halt still
+    // has exactly one way to move the Mission forward, and this is it.
+    expect(answers).toContain(`data-action="kill-mission"`);
     // The pill still says where the Mission is. What cannot be read is *why* it stopped, and the view
     // says nothing rather than guessing.
     expect(html).toContain("halted");
@@ -1121,7 +1142,7 @@ describe("a Halt no rule validated is read, never dereferenced", () => {
     const hurt = damaged(running(), (event) =>
       event.kind === "delegated" ? { ...event, delegationId: undefined } : event,
     );
-    const cockpit = cockpitOf(6, 40, 50);
+    const cockpit = cockpitOf(6, 40, 50, fakeTerminalOf());
     fold(cockpit, {
       kind: "mission",
       state: { ...stateOf(hurt), delegations: null },
@@ -1138,7 +1159,7 @@ describe("a Halt no rule validated is read, never dereferenced", () => {
     // Guarding the list and then dereferencing what is in it is the half of the rule that is easy to
     // miss: a `find` callback reading `gate.id` off `[null]` throws in the same listener, for the same
     // reason. Reachable from a frame, because `fold` checks that a state is an object and no more.
-    const cockpit = cockpitOf(6, 40, 50);
+    const cockpit = cockpitOf(6, 40, 50, fakeTerminalOf());
     fold(cockpit, {
       kind: "mission",
       state: {
@@ -1155,7 +1176,7 @@ describe("a Halt no rule validated is read, never dereferenced", () => {
   });
 
   it("attributes nothing to a Pane when the Delegation list holds something that is not one", () => {
-    const cockpit = cockpitOf(6, 40, 50);
+    const cockpit = cockpitOf(6, 40, 50, fakeTerminalOf());
     fold(cockpit, {
       kind: "mission",
       state: { status: "running", delegations: [null], gates: [] },
@@ -1265,6 +1286,28 @@ class ShimElement {
 
   get children(): ShimElement[] {
     return this.nodes.filter((node): node is ShimElement => typeof node !== "string");
+  }
+
+  /** The first element child, or `null` — a real DOM's own answer, read by `syncPanes` after a scratch parse. */
+  get firstElementChild(): ShimElement | null {
+    return this.children[0] ?? null;
+  }
+
+  /**
+   * Adopts `node` as this element's last child, detaching it from wherever it was first — a real DOM's
+   * `appendChild` does the same silent move. This is what lets `syncPanes` grow the grid one Pane at a
+   * time, and what lets a scratch element (`document.createElement`) hand its parsed content over to the
+   * live tree without reparsing anything already mounted there.
+   */
+  appendChild(node: ShimElement): void {
+    if (node.parent !== undefined) {
+      const at = node.parent.nodes.indexOf(node);
+      if (at >= 0) {
+        node.parent.nodes.splice(at, 1);
+      }
+    }
+    this.nodes.push(node);
+    node.parent = this;
   }
 
   /** What a human reads, entity-decoded, as a browser's `textContent` answers it. */
@@ -1431,13 +1474,19 @@ type Page = {
 /**
  * `attach`, running: the real function, over the real markup, with the real listeners.
  *
- * The globals are installed here because `client.ts` reads `HTMLElement` and `HTMLInputElement` off the
- * global scope — the browser's own way of asking "is this an element" — and Vitest's node environment
- * has neither. They are removed again in `afterEach`, so no other test in this file ever sees them.
+ * The globals are installed here because `client.ts` reads `HTMLElement`, `HTMLInputElement` and
+ * `document` off the global scope — the browser's own way of asking "is this an element" and "build me
+ * one detached from the tree" — and Vitest's node environment has none of them. `document` is the
+ * shim's own object, with the one method `syncPanes` calls: `createElement`, which answers a fresh,
+ * parentless `ShimElement`, exactly as a real `document.createElement` answers a fresh, parentless
+ * `Element`. All three are removed again in `afterEach`, so no other test in this file ever sees them.
  */
 function attached(cockpit: Cockpit): Page {
   (globalThis as Record<string, unknown>)["HTMLElement"] = ShimElement;
   (globalThis as Record<string, unknown>)["HTMLInputElement"] = ShimInput;
+  (globalThis as Record<string, unknown>)["document"] = {
+    createElement: (tag: string) => new ShimElement(tag, new Map()),
+  };
 
   const root = new ShimElement("div", new Map());
   const sent: FromCockpit[] = [];
@@ -1494,11 +1543,12 @@ function attached(cockpit: Cockpit): Page {
 afterEach(() => {
   delete (globalThis as Record<string, unknown>)["HTMLElement"];
   delete (globalThis as Record<string, unknown>)["HTMLInputElement"];
+  delete (globalThis as Record<string, unknown>)["document"];
 });
 
 /** A Cockpit with two Panes, so "the Pane this control sits in" has two candidates rather than one. */
-function withPanes(): Cockpit {
-  const cockpit = showing(running());
+function withPanes(terminalOf: TerminalFactory = fakeTerminalOf()): Cockpit {
+  const cockpit = showing(running(), terminalOf);
   fold(cockpit, { kind: "pane-data", paneId: "pane-one", chunk: "one" } as ToCockpit);
   fold(cockpit, { kind: "pane-data", paneId: "pane-two", chunk: "two" } as ToCockpit);
   return cockpit;
@@ -1609,6 +1659,102 @@ describe("a click becomes the gesture answerFor says it means", () => {
     expect(page.sent).toEqual([meant.kind === "sends" ? meant.sent : undefined]);
   });
 
+  it("ends the Mission through the same path every other answer takes, and the reason travels with it", () => {
+    const page = attached(showing(running()));
+
+    const box = page.root
+      .querySelectorAll("[data-value]")
+      .find((element) => element.attributes.get("data-value") === "reason");
+    if (!(box instanceof ShimInput)) {
+      throw new Error("the Kill answer has a reason box");
+    }
+    box.value = "the Zord walked off the job";
+    const button = page.root
+      .querySelectorAll("[data-action]")
+      .find((element) => element.attributes.get("data-action") === "kill-mission");
+    if (button === undefined) {
+      throw new Error("the view rendered a Kill control while the Mission is running");
+    }
+
+    page.click(button);
+
+    expect(page.sent).toHaveLength(1);
+    const sent = page.sent[0];
+    if (sent?.kind !== "submit" || sent.command.kind !== "kill-mission") {
+      throw new Error("Kill is a submit carrying a kill-mission Command");
+    }
+    expect(sent.command.reason).toBe("the Zord walked off the job");
+    // And it is exactly what `answerFor` says the same click means — never a frame spelled out by hand.
+    const meant = answerFor("kill-mission", { reason: "the Zord walked off the job" }, page.at);
+    expect(page.sent).toEqual([meant.kind === "sends" ? meant.sent : undefined]);
+
+    // The engine really does accept it: this is not a shape the view invented.
+    const decided = submit(running(), sent.command);
+    const entry = decided[decided.length - 1];
+    expect(entry?.decision.kind).toBe("accepted");
+    expect(stateOf(decided).status).toBe("killed");
+  });
+
+  it("renders a killed Mission distinctly from a delivered one, reason and all", () => {
+    const killed = submit(running(), {
+      kind: "kill-mission",
+      occurredAt: at(9),
+      reason: "the Cap was about to be reached and nobody wanted to spend more",
+    });
+    const page = attached(cockpitOf(6, 40, 50, fakeTerminalOf()));
+
+    page.receives(missionMessage(killed));
+
+    const bar = page.root.querySelector("#mission")?.textContent ?? "";
+    expect(bar).toContain("killed");
+    expect(bar).toContain("the Cap was about to be reached and nobody wanted to spend more");
+    // No Kill control any more: a killed Mission is terminal, and `killable` says so.
+    expect(page.root.querySelectorAll("[data-action]").some(
+      (control) => control.attributes.get("data-action") === "kill-mission",
+    )).toBe(false);
+    expect(killable(stateOf(killed))).toBe(false);
+  });
+
+  it("adds a Pane's shell without disturbing a terminal already mounted in another one", () => {
+    const { terminalOf, built } = trackedTerminals();
+    const page = attached(showing(running(), terminalOf));
+    page.receives({ kind: "pane-data", paneId: "pane-one", chunk: "first" } as ToCockpit);
+
+    const firstContainer = page.root.querySelector("#screen-1");
+    if (firstContainer === null) {
+      throw new Error("the first Pane's screen is mounted");
+    }
+    // Marks the container the way `TerminalLike.open` would leave something behind in a real browser —
+    // this shim's `open` does not, so the test plants its own marker to prove the container survives.
+    firstContainer.innerHTML = `<span class="mounted">xterm was here</span>`;
+
+    // A second Pane arrives **after** `attach` already ran, which is the path `document.createElement`
+    // and `appendChild` exist for: `#panes` already holds a live tree, and rebuilding it wholesale would
+    // tear the first Pane's mounted content out along with the second Pane's shell.
+    page.receives({ kind: "pane-data", paneId: "pane-two", chunk: "second" } as ToCockpit);
+
+    expect(page.root.querySelector("#screen-1")?.textContent).toBe("xterm was here");
+    expect(page.root.querySelector("#screen-2")).not.toBeNull();
+    expect(built).toHaveLength(2);
+    expect(built[0]?.opened).toEqual([firstContainer]);
+    expect(built[1]?.opened).toHaveLength(1);
+    expect(built[1]?.opened[0]).toBe(page.root.querySelector("#screen-2"));
+  });
+
+  it("opens each Pane's terminal exactly once, however many times its chrome is refreshed", () => {
+    const { terminalOf, built } = trackedTerminals();
+    const page = attached(showing(running(), terminalOf));
+    page.receives({ kind: "pane-data", paneId: "pane-one", chunk: "x" } as ToCockpit);
+    expect(built[0]?.opened).toHaveLength(1);
+
+    // A status change resyncs the whole grid, including this Pane's chrome — and must not reopen it.
+    page.receives({ kind: "pane-status", paneId: "pane-one", status: "working" } as ToCockpit);
+    page.receives({ kind: "pane-status", paneId: "pane-one", status: "idle" } as ToCockpit);
+
+    expect(built[0]?.opened).toHaveLength(1);
+    expect(page.root.querySelector("#pane-1")?.textContent).toContain("idle");
+  });
+
   it("wires every action the Cockpit renders, and nothing that is not a control", () => {
     // The whole claim plant 7 measured: each rendered control reaches `send`. Driven over every rendering
     // this view can produce, so an action added to `ACTIONS` with no wire fails here.
@@ -1693,7 +1839,7 @@ describe("a keypress reaches the Pane it was typed into", () => {
 
 describe("a frame from the server redraws the region that moved", () => {
   it("draws the Gate's question when the Mission halts at one", () => {
-    const page = attached(cockpitOf(6, 40, 50));
+    const page = attached(cockpitOf(6, 40, 50, fakeTerminalOf()));
     expect(page.root.querySelector("#mission")?.textContent).toContain("waiting for the Mission");
 
     page.receives(missionMessage(gateHalted()));
@@ -1707,7 +1853,7 @@ describe("a frame from the server redraws the region that moved", () => {
   });
 
   it("draws a Mission whose Halt was lost, instead of throwing in the socket listener — BUG-2", () => {
-    const page = attached(cockpitOf(6, 40, 50));
+    const page = attached(cockpitOf(6, 40, 50, fakeTerminalOf()));
 
     // The exact failure: the frame reaches `attach`'s redraw, `renderMission` calls `renderAnswers`, and
     // `state.halt.reason` was read off `null`. The throw was *inside* the `message` handler, so nothing
@@ -1722,14 +1868,15 @@ describe("a frame from the server redraws the region that moved", () => {
     expect(page.root.querySelector("#mission")?.textContent).toContain("The Cap has been reached");
   });
 
-  it("writes a Pane's bytes into that Pane's screen and leaves the rest of the page alone", () => {
-    const page = attached(withPanes());
+  it("writes a Pane's bytes to that Pane's terminal and leaves the rest of the page alone", () => {
+    const { terminalOf, built } = trackedTerminals();
+    const page = attached(withPanes(terminalOf));
     const bar = page.root.querySelector("#mission")?.textContent;
 
     page.receives({ kind: "pane-data", paneId: "pane-one", chunk: "hello" } as ToCockpit);
 
-    expect(page.root.querySelector("#screen-1")?.textContent).toContain("hello");
-    expect(page.root.querySelector("#screen-2")?.textContent).not.toContain("hello");
+    expect(built[0]?.written).toContain("hello");
+    expect(built[1]?.written ?? []).not.toContain("hello");
     expect(page.root.querySelector("#mission")?.textContent).toBe(bar);
   });
 
@@ -1773,24 +1920,36 @@ describe("the guarantees the compiler carries", () => {
     expect(answer.kind === "sends" ? answer.sent.kind : "").toBe("submit");
   });
 
-  it("refuses an action name that is not one of the four the Cockpit renders", () => {
+  it("refuses an action name that is not one of the five the Cockpit renders", () => {
     // @ts-expect-error `Action` is the union of ACTIONS, not `string`: an unrendered action is not one
     const action: Action = "drop-the-database";
     expect(typeof action).toBe("string");
     expect([...ACTIONS]).toContain("approve-gate");
   });
 
-  it("refuses to resize a screen, because rows and cols are fixed when it is made", () => {
-    const screen = screenOf(4, 20, 10);
-    // @ts-expect-error `rows` is readonly: this terminal does not reflow, and the type is what says so
-    screen.rows = 40;
-    // @ts-expect-error `cols` is readonly for the same reason, and no rule anywhere changes it
-    screen.cols = 200;
-    expect(screen.rows).toBe(40);
+  it("requires a terminalOf factory, and there is no default to fall back on", () => {
+    // @ts-expect-error `cockpitOf` takes four arguments. There is no `@xterm/xterm` this module could
+    // reach for on its own — see the module doc's "xterm.js is here now" — so a missing factory is a
+    // compile error rather than a silent placeholder terminal.
+    const build = (): Cockpit => cockpitOf(4, 20, 10);
+    expect(typeof build).toBe("function");
+  });
+
+  it("refuses to replace a Pane's terminal, because it is built once and never swapped", () => {
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
+    fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "x" } as ToCockpit);
+    const pane = cockpit.panes[0];
+    if (pane === undefined) {
+      throw new Error("a Pane exists");
+    }
+    // @ts-expect-error `terminal` is readonly: built once by `terminalOf`, and `attach`'s `opened` guard
+    // (keyed by a Pane's ordinal) is only trustworthy because a Pane never gets a second terminal.
+    pane.terminal = fakeTerminal();
+    expect(pane.terminal).toBeDefined();
   });
 
   it("refuses to swap a Cockpit's Pane list, although the fold appends to it", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "x" } as ToCockpit);
     expect(cockpit.panes.length).toBe(1);
     // @ts-expect-error `panes` is a readonly reference: a Pane is added by the fold, never replaced
@@ -1801,7 +1960,7 @@ describe("the guarantees the compiler carries", () => {
   });
 
   it("refuses to renumber a Pane, because its slot is assigned once when it is first heard from", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     fold(cockpit, { kind: "pane-data", paneId: "a", chunk: "x" } as ToCockpit);
     const pane = cockpit.panes[0]!;
     // @ts-expect-error `ordinal` is readonly: the grid slot is the order the Pane was first heard in
@@ -1819,7 +1978,7 @@ describe("the guarantees the compiler carries", () => {
   });
 
   it("refuses to fold a gesture, because the fold reads what the server said", () => {
-    const cockpit = cockpitOf(4, 20, 10);
+    const cockpit = cockpitOf(4, 20, 10, fakeTerminalOf());
     // @ts-expect-error `pane-write` is a FromCockpit: it travels the other way and folds into nothing
     fold(cockpit, { kind: "pane-write", paneId: "a", keystrokes: "x" });
     expect(cockpit.panes).toEqual([]);

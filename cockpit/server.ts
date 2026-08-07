@@ -181,12 +181,35 @@
  * it is loopback plus the `Origin` refusal. `application/json` is required as well, so that a cross-origin
  * form post — which no browser preflights — cannot reach it at all.
  *
+ * ## The xterm.js route, added by Task 10 and why it lives beside the view rather than inside it
+ *
+ * The hand-written emulator Task 6 built has no alternate screen buffer, no insert/delete line, no
+ * scroll region, no reflow, one column per code point and no mouse — written out in full in its own
+ * module doc — and most Zord CLIs run as a full-screen TUI, so this is not cosmetic. `@xterm/xterm`
+ * replaces it, and a real dependency's browser bundle is a **file**, not a string this server can compose
+ * the way it composes `view`: it is served at `GET ${XTERM_PATH}/xterm.js` and `GET ${XTERM_PATH}/xterm.css`
+ * exactly as `view` is served at `/`, and for the same reason declared Gap 1 used to give for not having
+ * one — a second file needs a second route, and now there is a second file.
+ *
+ * `xterm` arrives as two strings, **not** as a path this module reads itself: `cockpit/view.ts` already
+ * owns "read a file at serve time" (`clientScript`, Declared Gap 2 there), and a second reader here would
+ * be a second place that decision lives. This module still requires nothing beyond `node:crypto`,
+ * `node:http`, `node:net` and `node:stream` — `xterm.js`'s own 488 KB of JavaScript is bytes to this file,
+ * exactly as `view` and a control frame's body are. It is optional, the same shape as `control`: a server
+ * built with none answers `404` at both paths rather than falling back to a placeholder terminal.
+ *
+ * No `Origin` check guards these two routes, unlike `/` — deliberately: `/` is already unauthenticated
+ * (the server's own declared Gap on authentication), and a `<script src>` or `<link>` load is not blocked
+ * by the same-origin policy in any browser regardless of what this server does, so refusing a foreign
+ * `Origin` here would refuse nothing a browser could not already read some other way. Reading the bytes
+ * of a terminal emulator library carries no Mission data.
+ *
  * ## Declared Gaps
  *
- * 1. **One document, no assets.** `view` is served at `/` and `/index.html`, and everything else is 404.
- *    A view that needs `xterm.js` as a separate file needs a path to serve it from; that arrives with
- *    the view (Task 6), which is the first thing that has an asset. A map of paths sitting here today
- *    would be a field no rule fills.
+ * 1. ~~One document, no assets.~~ **Narrowed by Task 10.** `view` is still the only document, but two
+ *    assets now exist beside it — `xterm.js` and `xterm.css` — each with its own route rather than a map
+ *    of paths, because a map would be a field this server does not otherwise need: nothing here composes
+ *    an asset manifest, and a third asset is a third route rather than a generalisation nobody asked for.
  * 2. **No provider list.** `runtime/providers.ts` has no member in this envelope, because choosing a CLI
  *    happens where a Pane is spawned and that is the control plane's. Nothing here imports it.
  * 3. **The Cockpit is opened on one Mission.** Nothing checks that a `submit` carrying `open-mission`
@@ -269,6 +292,12 @@ const CLOSE_GRACE_MS = 200;
 export const CONTROL_PATH = "/mcp";
 
 /**
+ * Where the `xterm.js` bundle is served, when it is given — this path and nothing under it, unlike
+ * `CONTROL_PATH`: there are exactly two files, `xterm.js` and `xterm.css`, and no third path here answers.
+ */
+export const XTERM_PATH = "/xterm";
+
+/**
  * The largest frame, and the largest reassembled message, this server will read. Default 1 MiB.
  *
  * A gesture is a Command: a Briefing, a Slice, a Contract of a few Clauses. A megabyte is three orders
@@ -332,6 +361,21 @@ export type CockpitServerOptions = {
    * serves.
    */
   readonly view: string;
+  /**
+   * The `xterm.js` bundle, served at `${XTERM_PATH}/xterm.js` and `${XTERM_PATH}/xterm.css`.
+   *
+   * Optional, absent by default, the same shape as `control`: a Cockpit built with no bundle answers
+   * `404` at both paths, exactly as one built with no control plane answers `404` at `CONTROL_PATH` —
+   * this server holds no placeholder terminal to fall back to, because a placeholder here would be the
+   * second terminal `cockpit/view/client.ts`'s module doc explicitly refuses to keep once a real one
+   * exists. Whoever starts the server reads the installed package and hands the bytes in, exactly as it
+   * reads `client.ts` and hands `view` in — `cockpit/view.ts`'s `xtermAssets()` is that reader.
+   *
+   * **Declared Gap:** `bin/mz.ts` is outside this task's editable scope and does not pass this option
+   * yet, so the real `mz .` run still answers `404` at both paths until that one-line addition is made.
+   * Every test in this file and in `view.test.ts` builds a server that does pass it.
+   */
+  readonly xterm?: { readonly js: string; readonly css: string };
   /**
    * The control plane, mounted at `CONTROL_PATH` and everything under it.
    *
@@ -684,11 +728,20 @@ export async function cockpitServer(options: CockpitServerOptions): Promise<Cock
       answer(response, 405, "text/plain; charset=utf-8", "this server answers GET and HEAD", request);
       return;
     }
-    if (path !== "/" && path !== "/index.html") {
-      answer(response, 404, "text/plain; charset=utf-8", `there is nothing at ${path}`, request);
+    if (path === "/" || path === "/index.html") {
+      answer(response, 200, "text/html; charset=utf-8", options.view, request);
       return;
     }
-    answer(response, 200, "text/html; charset=utf-8", options.view, request);
+    const xterm = options.xterm;
+    if (xterm !== undefined && path === `${XTERM_PATH}/xterm.js`) {
+      answer(response, 200, "text/javascript; charset=utf-8", xterm.js, request);
+      return;
+    }
+    if (xterm !== undefined && path === `${XTERM_PATH}/xterm.css`) {
+      answer(response, 200, "text/css; charset=utf-8", xterm.css, request);
+      return;
+    }
+    answer(response, 404, "text/plain; charset=utf-8", `there is nothing at ${path}`, request);
   });
 
   http.on("upgrade", (request: IncomingMessage, socket: Duplex) => {

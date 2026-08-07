@@ -14,9 +14,13 @@
  * move with it, and nothing enforces that — `view.test.ts` pins the values against `app/globals.css` by
  * reading both, so the copy fails loudly rather than drifting quietly.
  *
- * Three rules are lifted verbatim rather than approximated: `--font-mono` (the whole stack),
- * `.grid-bg` (the cockpit texture) and the `blink` keyframes behind `.caret`, which is what draws the
- * terminal cursor.
+ * Two rules are lifted verbatim rather than approximated: `--font-mono` (the whole stack) and `.grid-bg`
+ * (the cockpit texture).
+ *
+ * `.caret` and its `blink` keyframes are **gone**, removed by Task 10 rather than left as dead rules:
+ * they drew the hand-rolled emulator's own cursor, and `xterm.js`'s own stylesheet (`css/xterm.css`,
+ * served from `XTERM_PATH` and linked into the document by `cockpit/view.ts`) draws a real terminal's
+ * cursor now. A rule nothing emits is the same lie as a comment describing code that no longer runs.
  */
 
 /** The palette, exactly as `@theme` in `app/globals.css` declares it. Pinned by `view.test.ts`. */
@@ -62,9 +66,6 @@ body {
 }
 #cockpit { display: flex; flex-direction: column; gap: 14px; padding: 14px; min-height: 100%; }
 ::selection { background: color-mix(in srgb, var(--color-cmd) 35%, transparent); }
-
-@keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-.caret { animation: blink 1.05s steps(1) infinite; background: var(--color-ink); color: var(--color-void); }
 
 .waiting { color: var(--color-dim); margin: 0; padding: 10px 12px; }
 
@@ -181,19 +182,20 @@ button:hover { border-color: var(--color-ink); }
 .pane .provider { color: var(--color-scout); font-size: 11px; }
 .pane .cost { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--color-build); }
 .pane .head button { padding: 2px 8px; font-size: 11px; }
-.pane .title { padding: 4px 10px; color: var(--color-mute); font-size: 11px; border-bottom: 1px solid var(--color-line); }
+/*
+ * The mount point xterm.js's Terminal.open fills — empty until then, which is why this carries no
+ * white-space or text rules of its own any more: what used to draw text here was Task 6's hand-rolled
+ * emulator, and xterm.js's own stylesheet (linked into the document, see the module doc) draws
+ * everything inside it, including its cursor. Sizing and the pre-mount background are this file's;
+ * everything about how a character looks is xterm.css's.
+ */
 .pane .screen {
-  margin: 0;
-  padding: 8px 10px;
   flex: 1 1 auto;
-  overflow: auto;
-  white-space: pre;
-  font-family: var(--font-mono);
+  overflow: hidden;
   background: var(--color-void);
   color: var(--color-ink);
 }
 .pane .screen:focus { outline: 1px solid var(--color-scout); outline-offset: -1px; }
-.pane .screen::after { content: ""; }
 
 /* ---------- the record ---------- */
 #record {

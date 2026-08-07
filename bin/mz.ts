@@ -430,7 +430,7 @@ export async function startCockpit(options: CockpitOptions): Promise<RunningCock
   // that already resolves `@engine/*` these are ordinary imports that happen a little later than usual.
   const { instantFromDate, zordId } = await import("@engine/index");
   const { cockpitServer, CONTROL_PATH } = await import("../cockpit/server");
-  const { cockpitView } = await import("../cockpit/view");
+  const { cockpitView, xtermAssets } = await import("../cockpit/view");
   const { controlPlane } = await import("../runtime/mcp-server");
   const { cortexStore } = await import("../runtime/cortex-store");
   const { missionStore } = await import("../runtime/mission-store");
@@ -534,6 +534,10 @@ export async function startCockpit(options: CockpitOptions): Promise<RunningCock
     writer,
     panes,
     view: await cockpitView(),
+    // A real terminal, not the hand-rolled one Task 6 shipped and Task 10 deleted: the route is
+    // optional on the server (Gap, declared in both `server.ts` and `view.ts`) precisely so this is
+    // the one line that turns it on for the program a human runs.
+    xterm: await xtermAssets(),
     control,
     ...(options.port === undefined ? {} : { port: options.port }),
   });

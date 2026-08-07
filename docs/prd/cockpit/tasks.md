@@ -115,7 +115,7 @@ criterion did.
 
 ## Task 10 — Emulator fidelity and a real DOM
 
-- **Status**: todo
+- **Status**: done
 - **Goal**: the three things Task 6 could not reach because it was not allowed a dependency, plus the
   human answer it was not asked for.
 - **Touches**: `package.json`, `cockpit/server.ts`, `cockpit/view/**`, and their tests
@@ -138,6 +138,19 @@ criterion did.
      stopped at its Cap whose human does not want to spend more currently has nothing to say.
 - **Verification**: a Pane running a TUI renders it; a click drives a Gate decision under a
   real DOM; `kill-mission` from the view ends a Mission halted at its Cap.
+- **Delivered.** `@xterm/xterm` is a real dependency, served same-origin from `${XTERM_PATH}` on the
+  Cockpit's own server; the hand-rolled emulator (`Screen`, `feed`, the CSI/OSC parser) is deleted
+  rather than kept as a fallback, because the library implements every one of the six things it
+  declared missing. Kill is wired the same way every other answer is — through `submit` — and its
+  guard (`killable`) is copied from `decideKillMission`'s own condition rather than approximated.
+  `bin/mz.ts` was one line short of using the new route (`xterm: await xtermAssets()`); added and
+  verified against the real, running program, not only against a test.
+- **Declared Gap carried forward**: a Pane's OSC title (`ESC ] 0 ; text BEL`) is no longer
+  shown anywhere. `xterm.js` exposes it only through an event subscription (`onTitleChange`), which
+  is a small addition outside "bytes become pixels" and belongs to whoever next touches the Pane
+  chrome. And a real browser's `.open()` — painting, `getComputedStyle`, canvas — stays unproven, as
+  it was after Task 6: the DOM shim is faithful about markup and event delivery, deliberately not
+  about rendering a browser does not delegate to a library.
 - **Why it is a task and not a caveat fixed in place**: all three need `package.json`, and two need
   `cockpit/server.ts` — a route that does not exist and is Task 5's delivered code. Installing a
   dependency inside a task that was told not to have one is the scope creep this flow exists to stop.

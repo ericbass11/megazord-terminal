@@ -10,9 +10,10 @@
  *
  * ## Why this file is one module, and why it is TypeScript the browser runs
  *
- * `cockpit/server.ts` serves **one string at `/`** and there is no path to serve a second file from —
- * its declared Gap 1 says so, and this task may not edit it. So everything the browser executes has to
- * be inside that one string, which is what shapes this file:
+ * `cockpit/server.ts` serves the document itself at `/` and nothing else composed the way this file is —
+ * Task 10 gave it a second route, but that route serves `xterm.js`'s own installed bundle verbatim, not
+ * anything assembled from TypeScript. Everything **this file** contributes to the page still has to be
+ * inside the one document string `cockpit/view.ts` composes, which is what shapes this file:
  *
  * - **No runtime import.** Every `import` here is `import type`, erased at compile time, exactly as
  *   `cockpit/protocol.ts` is written and for the same reason: a browser cannot load `node-pty`, and
@@ -24,32 +25,48 @@
  *   module and asserts it answers what this module answers, so "what the tests drive is what the browser
  *   runs" is measured rather than assumed.
  *
- * ## `xterm.js` is not here, and that is the decision this file is built around
+ * ## `xterm.js` is here now, and it never appears in this file's imports
  *
- * `xterm.js` is an npm package. It is **not installed** in this repository, `package.json` is outside
- * this task's scope, and `CLAUDE.md` records that the product must build and render with no network — so
- * a `<script src="https://…">` is ruled out in the one place a user would never look for it. That leaves
- * three doors, and two of them are shut:
+ * Task 6 drew a hand-rolled terminal emulator in this module because `xterm.js` was not installed,
+ * `server.ts` had no second route, and a `<script src="https://…">` is ruled out everywhere in this
+ * repository. Task 10 closes all three: `@xterm/xterm` is a real dependency, `cockpit/server.ts` serves
+ * its bundle from `XTERM_PATH`, and `cockpit/view.ts` loads it same-origin, before the module script that
+ * needs it, as a classic `<script src>` that leaves a global `Terminal` behind — the way a UMD bundle
+ * behaves with no module system to find. That global is never referenced by name in this file, and that
+ * is deliberate rather than an oversight: **the whole point of "every import here is `import type`" is
+ * that this module requires nothing to run**, and reaching for `window.Terminal` directly would tie a
+ * pure fold to a name that only exists in a browser that has already loaded a `<script>` this file cannot
+ * see. So a Pane's terminal is **injected** instead, through `Cockpit.terminalOf` — a factory that builds
+ * something shaped like `TerminalLike`, below. The bootstrap at the foot of `cockpit/view.ts` is the one
+ * place that actually writes `new Terminal(...)`, because it is the one piece of this whole page that is
+ * not typechecked and not imported by a test (see that module's Declared Gap 1); everything on this side
+ * of the injection is ordinary, testable TypeScript that has never heard of `@xterm/xterm`.
  *
- * - **Vendor a copy into the served string.** There is no copy to vendor. Adding one means a dependency
- *   and a `package.json` edit.
- * - **Serve it from a second route.** The route does not exist and `server.ts` may not be edited here.
- * - **Draw the terminal here.** What this file does.
- *
- * So the terminal below is a small, honest emulator: a fixed screen with bounded scrollback, the control
- * characters a pty actually produces, and the CSI subset a CLI actually uses. What it costs is written
- * out in "What this terminal does not do". **If the server could be changed, the preference is a second
- * route** — `GET /xterm.js` serving a vendored copy, with `xterm` as a real dependency — because a
- * terminal emulator is a solved problem and every hour spent on this one is an hour not spent on the
- * Mission. This is the narrowest thing that draws a real process faithfully, not the right long answer.
+ * The hand-rolled emulator — the screen grid, the CSI/OSC parser, the ANSI palette, the HTML it drew — is
+ * **deleted**, not kept as a fallback: `xterm.js` implements every one of the six things its own module
+ * doc listed as missing (the alternate buffer, insert/delete line, a scroll region, reflow, wide
+ * characters, mouse reporting), so a fallback path would be exactly the second terminal that module doc
+ * argued against keeping once a real one exists, and nothing in this codebase would ever choose it. What
+ * a Pane's bytes become is now `xterm.js`'s question, asked once per Pane, and this file's job shrinks to
+ * "get the bytes there and mount the result" — see `TerminalLike`, `fold`'s `pane-data` case and
+ * `syncPanes` in `attach`.
  *
  * ## What is pure, and the one part that is not
  *
- * Everything that decides anything is a function of its arguments: the terminal fold, the Cockpit fold,
- * every `render*`, `answerFor`, `keystrokesOf`, `brl`. `attach` is the only function that touches the
- * DOM or a socket and it holds no judgement. That split is deliberate: no DOM implementation is installed
- * in this repository (`jsdom` is absent), so the choice was between logic a test can drive and logic a
- * test cannot, and the logic is all on this side of the line.
+ * Everything that decides anything is a function of its arguments: the Cockpit fold, every `render*`,
+ * `answerFor`, `keystrokesOf`, `brl`. `attach` is the only function that touches the DOM or a socket and
+ * it holds no judgement. That split is deliberate: no DOM implementation is installed in this repository
+ * (`jsdom` is absent), so the choice was between logic a test can drive and logic a test cannot, and the
+ * logic is all on this side of the line.
+ *
+ * `fold`'s `pane-data` case is the one place that reaches slightly past "pure" on purpose, and it is not
+ * new: Task 6's `feed` mutated a `Screen` in place for the same reason `TerminalLike.write` mutates a
+ * terminal's buffer in place now — copying a grid, or a terminal's internal state, per chunk would be
+ * waste with nothing to show for it. What must be a pure fold in this product is the Mission, and that
+ * one lives in the engine, on disk, and is re-derived from the file on every gesture. Constructing a
+ * `TerminalLike` itself is **not** a DOM operation — `new Terminal(options)` builds a parser and a buffer
+ * with no browser underneath it, which is what makes `fold` able to call `cockpit.terminalOf(...)` at
+ * all — only **mounting** one (`TerminalLike.open`) touches a page, and that stays inside `attach`.
  *
  * `attach` **is** executed now, over the markup the renderers really produce, under the small DOM
  * `client.test.ts` argues for at length ("A DOM small enough to be honest"). What that closes is the hole
@@ -81,6 +98,7 @@ import type {
   Delegation,
   Gate,
   GateId,
+  KillMission,
   Meter,
   Mission,
   Money,
@@ -91,599 +109,40 @@ import type { FromCockpit, ToCockpit } from "../protocol";
 import type { PaneId, PaneStatus } from "../../runtime/pane-manager";
 
 /* =================================================================================================
- * The terminal
+ * The terminal, as this file now sees it
  *
- * A screen is `rows` × `cols` cells plus bounded scrollback, and `feed` is the whole parser. It is
- * **mutable**, deliberately: a pty writes bytes by the hundred thousand and copying a grid per chunk
- * would be waste with nothing to show for it. What must be a pure fold in this product is the Mission,
- * and that one lives in the engine, on disk, and is re-derived from the file on every gesture.
+ * `xterm.js` owns the screen grid, the CSI/OSC parser, the ANSI palette and the DOM it paints into —
+ * everything Task 6's hand-rolled emulator did, and more, which is why that emulator is gone rather than
+ * kept beside it. This file only needs to name the handful of members it actually calls.
  * ============================================================================================== */
 
-/** Everything a cell can carry beyond its character. `""` for both colours means the terminal default. */
-export type Pen = {
-  readonly fg: string;
-  readonly bg: string;
-  readonly bold: boolean;
-  readonly dim: boolean;
-  readonly italic: boolean;
-  readonly underline: boolean;
-  readonly inverse: boolean;
+/**
+ * The handful of an `xterm.js` `Terminal` this file needs, named structurally rather than imported.
+ *
+ * A real `@xterm/xterm` `Terminal` satisfies this by construction — TypeScript's structural typing needs
+ * no `implements` for it — and so does a lightweight fake with no library behind it at all, which is what
+ * lets a wiring test build a `Cockpit` without ever loading `@xterm/xterm`. The module doc explains why
+ * this is a structural type and not `import type { Terminal } from "@xterm/xterm"`: naming the real type
+ * here would still be erased at compile time, but it would also make this file's only sanctioned path to
+ * a terminal an **exact** match to a library's own surface — dozens of methods a fake would have to stub
+ * to satisfy the assignment — where three methods are the whole of what a Pane needs from one.
+ */
+export type TerminalLike = {
+  /**
+   * Feeds a Pane's bytes to the terminal. Fire-and-forget: `xterm.js` parses and repaints on its own
+   * schedule once it is open, and nothing here waits for that — see `fold`'s `pane-data` case.
+   */
+  write(data: string): void;
+  /**
+   * Mounts the terminal's own DOM into `container`, once. Called by `attach`'s `syncPanes` the first time
+   * a Pane's container exists; never called again for the same terminal — see `syncPanes` for why a
+   * rebuilt `#panes` region does not mean calling this twice.
+   */
+  open(container: HTMLElement): void;
 };
 
-/** The pen a screen starts with, and the one `SGR 0` returns to. */
-export const DEFAULT_PEN: Pen = Object.freeze({
-  fg: "",
-  bg: "",
-  bold: false,
-  dim: false,
-  italic: false,
-  underline: false,
-  inverse: false,
-});
-
-/**
- * One character and the inline CSS that draws it.
- *
- * The style is computed **when the cell is written**, not when it is rendered, so `htmlOfScreen` is a
- * run-length grouping over a string compare and holds no colour knowledge at all.
- */
-export type Cell = {
-  readonly ch: string;
-  readonly style: string;
-};
-
-/** A blank cell in the default pen. Frozen and shared: a screen is mostly this. */
-const BLANK: Cell = Object.freeze({ ch: " ", style: "" });
-
-/**
- * A terminal screen: what is on it, where the cursor is, and what the pen looks like.
- *
- * `pending` is the half of an escape sequence that arrived at the end of a chunk. A pty splits wherever
- * the kernel felt like splitting, so a parser that did not keep it would mis-draw at random.
- */
-export type Screen = {
-  readonly rows: number;
-  readonly cols: number;
-  readonly maxScrollback: number;
-  /** Exactly `rows` lines of exactly `cols` cells. The visible screen. */
-  grid: Cell[][];
-  /** Lines that scrolled off the top, oldest first, at most `maxScrollback` of them. */
-  scrollback: Cell[][];
-  row: number;
-  col: number;
-  pen: Pen;
-  pending: string;
-  /** What OSC 0 or OSC 2 last set. Rendered as the Pane's own title when a CLI sets one. */
-  title: string;
-};
-
-/**
- * The 16 ANSI colours, in the site's palette.
- *
- * The primaries are the pilot colours `app/globals.css` already defines — `--color-cmd` is red,
- * `--color-ctrl` is green, `--color-build` is yellow, `--color-scout` is blue, `--color-review` is
- * magenta — so a CLI printing in ANSI prints in this product's colours rather than in a second visual
- * language beside them.
- */
-const ANSI: readonly string[] = Object.freeze([
-  "#05070a",
-  "#ff3b30",
-  "#12c8a0",
-  "#ffb020",
-  "#2e8cff",
-  "#a472ff",
-  "#4fd6c8",
-  "#e9eff6",
-  "#5b6878",
-  "#ff6b62",
-  "#4ae0bd",
-  "#ffc65c",
-  "#6bacff",
-  "#bd99ff",
-  "#7fe6db",
-  "#ffffff",
-]);
-
-/** The largest `pending` this parser will hold before giving up on it. See `feed`. */
-const MAX_PENDING = 4096;
-
-/** A fresh screen. `rows`, `cols` and `maxScrollback` are required — see the Gap on resizing. */
-export function screenOf(rows: number, cols: number, maxScrollback: number): Screen {
-  return {
-    rows,
-    cols,
-    maxScrollback,
-    grid: blankGrid(rows, cols),
-    scrollback: [],
-    row: 0,
-    col: 0,
-    pen: DEFAULT_PEN,
-    pending: "",
-    title: "",
-  };
-}
-
-function blankGrid(rows: number, cols: number): Cell[][] {
-  const grid: Cell[][] = [];
-  for (let row = 0; row < rows; row += 1) {
-    grid.push(blankLine(cols));
-  }
-  return grid;
-}
-
-function blankLine(cols: number): Cell[] {
-  const line: Cell[] = [];
-  for (let col = 0; col < cols; col += 1) {
-    line.push(BLANK);
-  }
-  return line;
-}
-
-/**
- * The 256-colour palette, computed rather than tabulated.
- *
- * 0–15 are the ANSI sixteen, 16–231 the 6×6×6 cube, 232–255 the greyscale ramp — the standard xterm
- * layout, which is what every CLI that emits `38;5;n` means by it.
- */
-function indexedColour(index: number): string {
-  if (index < 0 || index > 255) {
-    return "";
-  }
-  if (index < 16) {
-    return ANSI[index] ?? "";
-  }
-  if (index < 232) {
-    const offset = index - 16;
-    const steps = [0, 95, 135, 175, 215, 255];
-    const red = steps[Math.floor(offset / 36) % 6] ?? 0;
-    const green = steps[Math.floor(offset / 6) % 6] ?? 0;
-    const blue = steps[offset % 6] ?? 0;
-    return hex(red, green, blue);
-  }
-  const level = 8 + (index - 232) * 10;
-  return hex(level, level, level);
-}
-
-function hex(red: number, green: number, blue: number): string {
-  const pair = (value: number): string => value.toString(16).padStart(2, "0");
-  return `#${pair(red)}${pair(green)}${pair(blue)}`;
-}
-
-/**
- * The inline CSS one pen draws with, or `""` for the terminal default.
- *
- * `inverse` is resolved here, by swapping the two colours and defaulting whichever is missing, because a
- * cell written under `SGR 7` must keep looking inverted after the pen moves on.
- */
-export function styleOf(pen: Pen): string {
-  const foreground = pen.inverse ? pen.bg || "#05070a" : pen.fg;
-  const background = pen.inverse ? pen.fg || "#e9eff6" : pen.bg;
-  const parts: string[] = [];
-  if (foreground !== "") {
-    parts.push(`color:${foreground}`);
-  }
-  if (background !== "") {
-    parts.push(`background:${background}`);
-  }
-  if (pen.bold) {
-    parts.push("font-weight:700");
-  }
-  if (pen.dim) {
-    parts.push("opacity:.6");
-  }
-  if (pen.italic) {
-    parts.push("font-style:italic");
-  }
-  if (pen.underline) {
-    parts.push("text-decoration:underline");
-  }
-  return parts.join(";");
-}
-
-/**
- * Everything a process wrote, folded onto a screen.
- *
- * Never throws: a chunk is bytes a CLI produced and this is the one function in the Cockpit that reads
- * all of them. An escape sequence it does not implement is **consumed and ignored**, never printed as
- * text — half-drawn garbage in a Pane is worse than a missing colour, and printing the bytes would leave
- * a human reading `[1;32m` and blaming their Zord.
- */
-export function feed(screen: Screen, chunk: string): void {
-  const text = screen.pending + chunk;
-  screen.pending = "";
-  let at = 0;
-
-  while (at < text.length) {
-    const ch = text.charAt(at);
-
-    if (ch === "\u001b") {
-      const consumed = escapeAt(screen, text, at);
-      if (consumed === undefined) {
-        // The sequence is split across chunks: keep it and wait. Bounded, because a stream of `\u001b[`
-        // and nothing else would otherwise grow this without end; past the bound it is not a sequence
-        // anybody wrote, so it is dropped rather than held for ever.
-        const tail = text.slice(at);
-        screen.pending = tail.length <= MAX_PENDING ? tail : "";
-        return;
-      }
-      at += consumed;
-      continue;
-    }
-
-    at += 1;
-
-    switch (ch) {
-      case "\n":
-        lineFeed(screen);
-        continue;
-      case "\r":
-        screen.col = 0;
-        continue;
-      case "\b":
-        screen.col = Math.max(0, screen.col - 1);
-        continue;
-      case "\t": {
-        const stop = Math.min(screen.cols - 1, (Math.floor(screen.col / 8) + 1) * 8);
-        screen.col = stop;
-        continue;
-      }
-      case "\u0007":
-        // The bell. Nothing here rings, and a visible one would be a decision nobody asked for.
-        continue;
-      default:
-        break;
-    }
-
-    if (ch < " " || ch === "\u007f") {
-      // Any other C0 control, and DEL. Consumed: they are not text and this terminal implements none.
-      continue;
-    }
-
-    put(screen, ch);
-  }
-}
-
-/** One printable character at the cursor, wrapping at the right margin. */
-function put(screen: Screen, ch: string): void {
-  if (screen.col >= screen.cols) {
-    screen.col = 0;
-    lineFeed(screen);
-  }
-  const line = screen.grid[screen.row];
-  if (line === undefined) {
-    return;
-  }
-  line[screen.col] = { ch, style: styleOf(screen.pen) };
-  screen.col += 1;
-}
-
-/** Down one line, scrolling the screen when the cursor is already on the last one. */
-function lineFeed(screen: Screen): void {
-  if (screen.row + 1 < screen.rows) {
-    screen.row += 1;
-    return;
-  }
-  const gone = screen.grid.shift();
-  if (gone !== undefined) {
-    screen.scrollback.push(gone);
-    while (screen.scrollback.length > screen.maxScrollback) {
-      screen.scrollback.shift();
-    }
-  }
-  screen.grid.push(blankLine(screen.cols));
-}
-
-/**
- * How many characters the escape sequence at `at` occupies, or `undefined` when it is not all here yet.
- *
- * The sequence is applied as a side effect on the way past. Splitting "how long is it" from "what does
- * it do" would mean parsing it twice.
- */
-function escapeAt(screen: Screen, text: string, at: number): number | undefined {
-  const next = text.charAt(at + 1);
-  if (next === "") {
-    return undefined;
-  }
-
-  if (next === "[") {
-    return csiAt(screen, text, at);
-  }
-  if (next === "]") {
-    return oscAt(screen, text, at);
-  }
-  if (next === "P" || next === "X" || next === "^" || next === "_") {
-    // DCS, SOS, PM, APC: a string terminated by ST. Consumed whole and ignored.
-    return stringAt(text, at, 2);
-  }
-  if (next === "(" || next === ")" || next === "*" || next === "+" || next === "#") {
-    // Character-set designation, one byte of payload.
-    return text.length > at + 2 ? 3 : undefined;
-  }
-  // A two-character escape: `ESC M`, `ESC 7`, `ESC =`, and the rest. None is implemented.
-  return 2;
-}
-
-/** A CSI sequence: parameter bytes, intermediate bytes, one final byte in `@`–`~`. */
-function csiAt(screen: Screen, text: string, at: number): number | undefined {
-  let scan = at + 2;
-  while (scan < text.length) {
-    const code = text.charCodeAt(scan);
-    // Parameter bytes 0x30–0x3f, intermediate bytes 0x20–0x2f.
-    if ((code >= 0x30 && code <= 0x3f) || (code >= 0x20 && code <= 0x2f)) {
-      scan += 1;
-      continue;
-    }
-    if (code >= 0x40 && code <= 0x7e) {
-      applyCsi(screen, text.slice(at + 2, scan), text.charAt(scan));
-      return scan + 1 - at;
-    }
-    // Not a CSI at all — a stray ESC followed by `[`. Consume what was scanned and carry on.
-    return scan - at;
-  }
-  return undefined;
-}
-
-/** An OSC string, terminated by BEL or by ST. */
-function oscAt(screen: Screen, text: string, at: number): number | undefined {
-  const bell = text.indexOf("\u0007", at + 2);
-  const st = text.indexOf("\u001b\\", at + 2);
-  const end = bell < 0 ? st : st < 0 ? bell : Math.min(bell, st);
-  if (end < 0) {
-    return undefined;
-  }
-  const body = text.slice(at + 2, end);
-  const semicolon = body.indexOf(";");
-  const code = semicolon < 0 ? body : body.slice(0, semicolon);
-  if (code === "0" || code === "2") {
-    screen.title = semicolon < 0 ? "" : body.slice(semicolon + 1);
-  }
-  return end + (end === st ? 2 : 1) - at;
-}
-
-/** A string sequence terminated by ST, consumed whole. */
-function stringAt(text: string, at: number, from: number): number | undefined {
-  const st = text.indexOf("\u001b\\", at + from);
-  if (st < 0) {
-    return undefined;
-  }
-  return st + 2 - at;
-}
-
-/** The CSI subset this terminal implements. Everything else is consumed. */
-function applyCsi(screen: Screen, parameters: string, final: string): void {
-  if (parameters.startsWith("?") || parameters.startsWith("<") || parameters.startsWith(">")) {
-    // A private-mode sequence: cursor visibility, the alternate screen buffer, mouse reporting, bracketed
-    // paste. None is implemented, all are consumed. See "What this terminal does not do".
-    return;
-  }
-  const numbers = numbersIn(parameters);
-  const first = numbers[0] ?? 0;
-
-  switch (final) {
-    case "m":
-      screen.pen = penAfter(screen.pen, numbers);
-      return;
-    case "A":
-      screen.row = Math.max(0, screen.row - Math.max(1, first));
-      return;
-    case "B":
-      screen.row = Math.min(screen.rows - 1, screen.row + Math.max(1, first));
-      return;
-    case "C":
-      screen.col = Math.min(screen.cols - 1, screen.col + Math.max(1, first));
-      return;
-    case "D":
-      screen.col = Math.max(0, screen.col - Math.max(1, first));
-      return;
-    case "G":
-      screen.col = clamp(Math.max(1, first) - 1, 0, screen.cols - 1);
-      return;
-    case "d":
-      screen.row = clamp(Math.max(1, first) - 1, 0, screen.rows - 1);
-      return;
-    case "H":
-    case "f":
-      screen.row = clamp(Math.max(1, first) - 1, 0, screen.rows - 1);
-      screen.col = clamp(Math.max(1, numbers[1] ?? 1) - 1, 0, screen.cols - 1);
-      return;
-    case "K":
-      eraseInLine(screen, first);
-      return;
-    case "J":
-      eraseInDisplay(screen, first);
-      return;
-    default:
-      return;
-  }
-}
-
-function numbersIn(parameters: string): number[] {
-  if (parameters === "") {
-    return [];
-  }
-  return parameters.split(";").map((part) => {
-    const value = Number.parseInt(part, 10);
-    return Number.isNaN(value) ? 0 : value;
-  });
-}
-
-function clamp(value: number, low: number, high: number): number {
-  return Math.min(high, Math.max(low, value));
-}
-
-/** SGR: the pen after a `CSI … m`. Extended colours consume their own parameters. */
-function penAfter(pen: Pen, numbers: readonly number[]): Pen {
-  if (numbers.length === 0) {
-    return DEFAULT_PEN;
-  }
-  let next: Pen = pen;
-  for (let at = 0; at < numbers.length; at += 1) {
-    const code = numbers[at] ?? 0;
-    if (code === 38 || code === 48) {
-      const mode = numbers[at + 1] ?? 0;
-      const colour =
-        mode === 5
-          ? indexedColour(numbers[at + 2] ?? 0)
-          : mode === 2
-            ? hex(numbers[at + 2] ?? 0, numbers[at + 3] ?? 0, numbers[at + 4] ?? 0)
-            : "";
-      next = code === 38 ? { ...next, fg: colour } : { ...next, bg: colour };
-      at += mode === 5 ? 2 : mode === 2 ? 4 : 1;
-      continue;
-    }
-    next = penWith(next, code);
-  }
-  return next;
-}
-
-function penWith(pen: Pen, code: number): Pen {
-  if (code === 0) {
-    return DEFAULT_PEN;
-  }
-  if (code === 1) {
-    return { ...pen, bold: true };
-  }
-  if (code === 2) {
-    return { ...pen, dim: true };
-  }
-  if (code === 3) {
-    return { ...pen, italic: true };
-  }
-  if (code === 4) {
-    return { ...pen, underline: true };
-  }
-  if (code === 7) {
-    return { ...pen, inverse: true };
-  }
-  if (code === 22) {
-    return { ...pen, bold: false, dim: false };
-  }
-  if (code === 23) {
-    return { ...pen, italic: false };
-  }
-  if (code === 24) {
-    return { ...pen, underline: false };
-  }
-  if (code === 27) {
-    return { ...pen, inverse: false };
-  }
-  if (code >= 30 && code <= 37) {
-    return { ...pen, fg: ANSI[code - 30] ?? "" };
-  }
-  if (code === 39) {
-    return { ...pen, fg: "" };
-  }
-  if (code >= 40 && code <= 47) {
-    return { ...pen, bg: ANSI[code - 40] ?? "" };
-  }
-  if (code === 49) {
-    return { ...pen, bg: "" };
-  }
-  if (code >= 90 && code <= 97) {
-    return { ...pen, fg: ANSI[code - 90 + 8] ?? "" };
-  }
-  if (code >= 100 && code <= 107) {
-    return { ...pen, bg: ANSI[code - 100 + 8] ?? "" };
-  }
-  return pen;
-}
-
-function eraseInLine(screen: Screen, mode: number): void {
-  const line = screen.grid[screen.row];
-  if (line === undefined) {
-    return;
-  }
-  const from = mode === 1 ? 0 : mode === 2 ? 0 : screen.col;
-  const to = mode === 1 ? screen.col : screen.cols - 1;
-  for (let col = from; col <= to && col < screen.cols; col += 1) {
-    line[col] = BLANK;
-  }
-}
-
-function eraseInDisplay(screen: Screen, mode: number): void {
-  if (mode === 2 || mode === 3) {
-    screen.grid = blankGrid(screen.rows, screen.cols);
-    return;
-  }
-  if (mode === 1) {
-    for (let row = 0; row < screen.row; row += 1) {
-      screen.grid[row] = blankLine(screen.cols);
-    }
-    eraseInLine(screen, 1);
-    return;
-  }
-  eraseInLine(screen, 0);
-  for (let row = screen.row + 1; row < screen.rows; row += 1) {
-    screen.grid[row] = blankLine(screen.cols);
-  }
-}
-
-/**
- * What is on the screen as plain text, scrollback first, trailing blanks trimmed.
- *
- * The reading a test drives the terminal through, and the reading a human copies out of a Pane.
- */
-export function textOf(screen: Screen): string {
-  return [...screen.scrollback, ...screen.grid].map(lineText).join("\n").replace(/\n+$/u, "");
-}
-
-function lineText(line: readonly Cell[]): string {
-  return line
-    .map((cell) => cell.ch)
-    .join("")
-    .replace(/ +$/u, "");
-}
-
-/** The screen as HTML: one `<span>` per run of cells sharing a style, and a caret at the cursor. */
-export function htmlOfScreen(screen: Screen): string {
-  const lines = [...screen.scrollback, ...screen.grid];
-  const cursorLine = screen.scrollback.length + screen.row;
-  return lines.map((line, at) => htmlOfLine(line, at === cursorLine ? screen.col : -1)).join("\n");
-}
-
-function htmlOfLine(line: readonly Cell[], cursorAt: number): string {
-  const width = trimmedWidth(line, cursorAt);
-  let html = "";
-  let runStyle: string | undefined;
-  let run = "";
-
-  const flush = (): void => {
-    if (runStyle === undefined) {
-      return;
-    }
-    html += runStyle === "" ? escapeHtml(run) : `<span style="${runStyle}">${escapeHtml(run)}</span>`;
-    runStyle = undefined;
-    run = "";
-  };
-
-  for (let col = 0; col < width; col += 1) {
-    const cell = line[col] ?? BLANK;
-    if (col === cursorAt) {
-      flush();
-      html += `<span class="caret" style="${cell.style}">${escapeHtml(cell.ch)}</span>`;
-      continue;
-    }
-    if (runStyle !== cell.style) {
-      flush();
-      runStyle = cell.style;
-    }
-    run += cell.ch;
-  }
-  flush();
-  return html;
-}
-
-/** How much of a line is worth drawing: up to its last non-blank cell, and never before the cursor. */
-function trimmedWidth(line: readonly Cell[], cursorAt: number): number {
-  let width = 0;
-  for (let col = 0; col < line.length; col += 1) {
-    const cell = line[col] ?? BLANK;
-    if (cell.ch !== " " || cell.style !== "") {
-      width = col + 1;
-    }
-  }
-  return Math.max(width, cursorAt + 1);
-}
+/** How a Pane's terminal is built. Rows, columns and scrollback — the same three `SCREEN` already names. */
+export type TerminalFactory = (rows: number, cols: number, scrollback: number) => TerminalLike;
 
 /** Text as HTML. The only escaping in this file, used by every `render*` below. */
 export function escapeHtml(text: string): string {
@@ -749,13 +208,14 @@ export function centsIn(typed: string): number | undefined {
  * The Cockpit: what the browser holds
  * ============================================================================================== */
 
-/** One Pane, as the browser knows it: what it wrote, what it last said about itself, and its slot. */
+/** One Pane, as the browser knows it: what it last said about itself, its slot, and its terminal. */
 export type PaneReading = {
   readonly paneId: string;
   /** Its slot in the grid, from one, in the order the Pane was first heard from. */
   readonly ordinal: number;
   status: PaneStatus;
-  readonly screen: Screen;
+  /** Where its bytes go. Built once, by `cockpit.terminalOf`, and never replaced. */
+  readonly terminal: TerminalLike;
 };
 
 /**
@@ -773,13 +233,20 @@ export type Cockpit = {
   readonly rows: number;
   readonly cols: number;
   readonly maxScrollback: number;
+  /** How a new Pane's terminal is built. Injected so this module never names `@xterm/xterm` itself. */
+  readonly terminalOf: TerminalFactory;
 };
 
 /** How many decided entries the record keeps. Older ones fall off the top. */
 export const MAX_DECIDED = 60;
 
 /** A Cockpit with nothing in it yet: what the browser holds before the first message arrives. */
-export function cockpitOf(rows: number, cols: number, maxScrollback: number): Cockpit {
+export function cockpitOf(
+  rows: number,
+  cols: number,
+  maxScrollback: number,
+  terminalOf: TerminalFactory,
+): Cockpit {
   return {
     panes: [],
     state: undefined,
@@ -788,12 +255,12 @@ export function cockpitOf(rows: number, cols: number, maxScrollback: number): Co
     rows,
     cols,
     maxScrollback,
+    terminalOf,
   };
 }
 
 /** What changed, so `attach` can redraw the one region that moved instead of the whole page. */
 export type Change =
-  | { readonly kind: "pane-screen"; readonly pane: PaneReading }
   | { readonly kind: "panes" }
   | { readonly kind: "mission" }
   | { readonly kind: "record" };
@@ -822,8 +289,12 @@ export function fold(cockpit: Cockpit, said: ToCockpit): Change | undefined {
       }
       const before = cockpit.panes.length;
       const pane = paneIn(cockpit, paneId);
-      feed(pane.screen, chunk);
-      return cockpit.panes.length === before ? { kind: "pane-screen", pane } : { kind: "panes" };
+      // Fed straight through: `xterm.js` parses and repaints on its own schedule, so there is nothing
+      // for a redraw to do for bytes landing on a Pane that already has a mounted terminal. A brand-new
+      // Pane still needs its shell built and its terminal opened, which is what `{ kind: "panes" }` asks
+      // `attach`'s `syncPanes` to do.
+      pane.terminal.write(chunk);
+      return cockpit.panes.length === before ? undefined : { kind: "panes" };
     }
 
     case "pane-status": {
@@ -881,7 +352,10 @@ function paneIn(cockpit: Cockpit, paneId: string): PaneReading {
     // A Pane heard from before its first status is starting, which is what the process table announces
     // for one that exists and has written nothing.
     status: "starting",
-    screen: screenOf(cockpit.rows, cockpit.cols, cockpit.maxScrollback),
+    // Built now, mounted later: construction touches no DOM (see the module doc), so `fold` can do this
+    // without `attach` ever having run — `client.test.ts` proves exactly that with a fixture that never
+    // calls `attach` at all.
+    terminal: cockpit.terminalOf(cockpit.rows, cockpit.cols, cockpit.maxScrollback),
   };
   cockpit.panes.push(pane);
   return pane;
@@ -1040,6 +514,7 @@ export const ACTIONS = Object.freeze([
   "revise-gate",
   "authorise-cap",
   "kill-pane",
+  "kill-mission",
 ] as const);
 
 /** One of the actions the rendered Cockpit puts on a control. */
@@ -1095,6 +570,19 @@ export function answerFor(
 
     case "kill-pane":
       return sends({ kind: "pane-kill", paneId: idAs<PaneId>(values["paneId"]) });
+
+    case "kill-mission": {
+      const command: KillMission = {
+        kind: "kill-mission",
+        occurredAt,
+        // A blank reason is sent rather than refused here, for the reason every other answer in this
+        // file is: `decideKillMission` already has the words for it ("a kill-mission Command must carry
+        // the reason it was ended for, and this one does not"), and a second copy of that judgement in a
+        // browser is a second place the rule lives.
+        reason: values["reason"] ?? "",
+      };
+      return sends({ kind: "submit", command });
+    }
 
     default:
       return { kind: "unknown", detail: `${JSON.stringify(action)} is not an answer this Cockpit makes` };
@@ -1264,7 +752,28 @@ export function renderMission(cockpit: Cockpit): string {
     `</span>` +
     `</div>`;
 
-  return bar + renderAnswers(cockpit);
+  return bar + (state.status === "killed" ? renderKilled(state) : "") + renderAnswers(cockpit);
+}
+
+/**
+ * The one line a killed Mission adds to the bar: that it ended with no Delivery, and why.
+ *
+ * What tells a killed Mission apart from a delivered one is not only the pill's label and tone
+ * (`statusTone` already answers those two differently) — it is this line, because "killed" alone reads
+ * as a fault and a human reading a Replay needs the reason a person gave for ending it. `reason` is read
+ * as `unknown`, for the reason `haltingGate` states: this Mission was folded from a file nothing judged,
+ * and a killed Mission whose reason was lost must say so rather than draw a blank a human cannot explain.
+ */
+function renderKilled(state: Mission): string {
+  const record: unknown = state;
+  const reason: unknown =
+    typeof record === "object" && record !== null && "reason" in record
+      ? (record as { reason: unknown }).reason
+      : undefined;
+  return (
+    `<p class="killed-reason">Ended with no Delivery — ` +
+    `${escapeHtml(typeof reason === "string" && reason !== "" ? reason : "no reason recorded")}</p>`
+  );
 }
 
 /** The Meter: the Cap, what has been spent against it, and whether it has been reached. */
@@ -1284,15 +793,32 @@ export function renderMeter(meter: Meter): string {
 }
 
 /**
- * What the Mission is waiting for a human to answer: a Gate decision, or a Cap authorisation.
+ * Whether this Mission currently accepts `kill-mission`.
  *
- * Nothing is offered when nothing is waiting, which is why this is derived from the halt rather than
- * from a flag: a control that is present and inert is a control a human will press.
+ * Matches `decideKillMission`'s guard in `engine/domain/mission.ts` **exactly** rather than a plausible
+ * approximation, per this task's own instruction not to guess it: running, or halted by whichever Halt
+ * stopped it — a Gate or the Cap alike, because Kill answers no Gate and is not blocked by the Cap either
+ * (`CLAUDE.md`: "Kill is not a Gate decision", "the kill because ending a Mission spends nothing"). A
+ * Mission this predicate says no to is `unopened`, `delivered` or already `killed` — nothing left to end.
+ */
+export function killable(state: Mission | undefined): boolean {
+  return state !== undefined && (state.status === "running" || state.status === "halted");
+}
+
+/**
+ * What the Mission is waiting for a human to answer: a Gate decision, a Cap authorisation, and — while
+ * running or halted at all — the option to end it instead.
+ *
+ * Nothing situational is offered when nothing is waiting, which is why the Gate/Cap half is derived from
+ * the halt rather than from a flag: a control that is present and inert is a control a human will press.
+ * Kill is different on purpose: it is not an answer to a *question* the Mission is asking, so it is
+ * offered whenever `killable` says the engine would accept it, Gate or Cap or neither.
  */
 export function renderAnswers(cockpit: Cockpit): string {
   const gate = haltingGate(cockpit.state);
+  let situational = "";
   if (gate !== undefined) {
-    return (
+    situational =
       `<div class="answer gate" data-answer="gate">` +
       `<h2>A Gate is open</h2>` +
       `<p class="question">${escapeHtml(String(gate.question))}</p>` +
@@ -1301,13 +827,10 @@ export function renderAnswers(cockpit: Cockpit): string {
       `<button type="button" data-action="approve-gate">Approve</button>` +
       `<input type="text" data-value="reason" placeholder="what to revise, and why">` +
       `<button type="button" data-action="revise-gate">Request revision</button>` +
-      `</div></div>`
-    );
-  }
-
-  if (stoppedAtCap(cockpit.state)) {
+      `</div></div>`;
+  } else if (stoppedAtCap(cockpit.state)) {
     const spent = cockpit.meter?.spent;
-    return (
+    situational =
       `<div class="answer cap" data-answer="cap">` +
       `<h2>The Cap has been reached</h2>` +
       `<p class="question">This Mission has spent ` +
@@ -1316,11 +839,21 @@ export function renderAnswers(cockpit: Cockpit): string {
       `<div class="controls">` +
       `<input type="text" data-value="amount" placeholder="the new Cap, in reais">` +
       `<button type="button" data-action="authorise-cap">Authorise</button>` +
-      `</div></div>`
-    );
+      `</div></div>`;
   }
 
-  return "";
+  const kill = killable(cockpit.state)
+    ? `<div class="answer kill" data-answer="kill">` +
+      `<h2>End the Mission</h2>` +
+      `<p class="question">Ends the Mission with no Delivery. An open Gate, if there is one, is left ` +
+      `unanswered.</p>` +
+      `<div class="controls">` +
+      `<input type="text" data-value="reason" placeholder="why this Mission is ending">` +
+      `<button type="button" data-action="kill-mission">Kill</button>` +
+      `</div></div>`
+    : "";
+
+  return situational + kill;
 }
 
 /** The Pane grid: one live terminal per Pane, with its status, its provider and what it has cost. */
@@ -1331,13 +864,16 @@ export function renderPanes(cockpit: Cockpit): string {
   return cockpit.panes.map((pane) => renderPane(cockpit, pane)).join("");
 }
 
-/** One Pane. The terminal is its own element so a chunk redraws it without touching anything else. */
-export function renderPane(cockpit: Cockpit, pane: PaneReading): string {
+/**
+ * One Pane's chrome: its status, provider, cost and Kill control. Split out of `renderPane` so `attach`
+ * can refresh it — on a status change, a Delegation join that just started answering, a cost update —
+ * **without** touching `.screen`, which is the one element in this Pane an `xterm.js` `Terminal` mounts
+ * itself into and must never see rebuilt out from under it. See `syncPanes`.
+ */
+export function renderPaneHead(cockpit: Cockpit, pane: PaneReading): string {
   const provider = providerFor(cockpit.state, pane.paneId);
   const spent = spentOn(cockpit.state, pane.paneId);
   return (
-    `<article class="pane" id="pane-${pane.ordinal}" data-pane="${escapeHtml(pane.paneId)}">` +
-    `<div class="head">` +
     pill(pane.status, paneTone(pane.status)) +
     `<span class="zord">${escapeHtml(pane.paneId)}</span>` +
     `<span class="provider">${provider === undefined ? "provider unattributed" : escapeHtml(provider)}</span>` +
@@ -1345,10 +881,23 @@ export function renderPane(cockpit: Cockpit, pane: PaneReading): string {
     // The PaneId travels as the **value** of a `data-value` box, exactly as the Gate's does, and not as
     // part of an attribute *name*. See `valuesAround` for what the other spelling cost.
     `<input type="hidden" data-value="paneId" value="${escapeHtml(pane.paneId)}">` +
-    `<button type="button" data-action="kill-pane">Kill</button>` +
-    `</div>` +
-    (pane.screen.title === "" ? "" : `<div class="title">${escapeHtml(pane.screen.title)}</div>`) +
-    `<pre class="screen" id="screen-${pane.ordinal}" tabindex="0">${htmlOfScreen(pane.screen)}</pre>` +
+    `<button type="button" data-action="kill-pane">Kill</button>`
+  );
+}
+
+/**
+ * One Pane's whole shell: the chrome, and an **empty** mount point for its terminal.
+ *
+ * Rendered once, when a Pane is first added to the grid — never again for the same Pane, because
+ * `.screen`'s content from that point on is `xterm.js`'s, mounted by `attach`'s `syncPanes` and written
+ * to by `fold`'s `pane-data` case, neither of which goes through this function. `renderPaneHead` is what
+ * a later chrome update re-renders.
+ */
+export function renderPane(cockpit: Cockpit, pane: PaneReading): string {
+  return (
+    `<article class="pane" id="pane-${pane.ordinal}" data-pane="${escapeHtml(pane.paneId)}">` +
+    `<div class="head" id="head-${pane.ordinal}">${renderPaneHead(cockpit, pane)}</div>` +
+    `<div class="screen" id="screen-${pane.ordinal}" tabindex="0"></div>` +
     `</article>`
   );
 }
@@ -1483,9 +1032,12 @@ export type Wiring = {
 /**
  * Binds a Cockpit to a page.
  *
- * Redraws by region: a Pane's bytes touch only that Pane's `<pre>`, so a stream of output never rebuilds
- * the answer a human is halfway through typing into. A status change rebuilds the grid, a `mission`
- * rebuilds the bar and the answers, a `decided` rebuilds the record.
+ * Redraws by region: a `mission` change rebuilds the bar and the answers, a `decided` rebuilds the
+ * record, a `panes` change resyncs the grid through `syncPanes` — which is careful, and the module doc's
+ * "xterm.js is here now" section says why: a Pane's bytes are never drawn by rebuilding markup any more,
+ * `xterm.js` repaints its own mount point on its own schedule the moment `fold` calls `write`, so a byte
+ * stream never touches the DOM through this function at all (`fold` answers `undefined` for it, and
+ * `undefined` redraws nothing — see `redraw`).
  */
 export function attach(cockpit: Cockpit, wiring: Wiring): (said: ToCockpit) => void {
   const { root } = wiring;
@@ -1493,26 +1045,85 @@ export function attach(cockpit: Cockpit, wiring: Wiring): (said: ToCockpit) => v
 
   const region = (id: string): HTMLElement | null => root.querySelector(`#${id}`);
 
+  // Which Panes' terminals have already been mounted, keyed by ordinal — bound to this `attach` call,
+  // never to the Cockpit: whether a terminal has been opened is a fact about *this page*, not about the
+  // Mission, and a real `xterm.js` `Terminal.open` is not itself the right guard (see `TerminalLike.open`
+  // and `syncPanes` below for why calling it a second time, on a different container, is not safe to
+  // rely on).
+  const opened = new Set<number>();
+
+  /** Opens a Pane's terminal into its `.screen`, once, whenever that element exists and this has not. */
+  const openPane = (pane: PaneReading): void => {
+    if (opened.has(pane.ordinal)) {
+      return;
+    }
+    const container = region(`screen-${pane.ordinal}`);
+    if (container !== null) {
+      pane.terminal.open(container);
+      opened.add(pane.ordinal);
+    }
+  };
+
+  /**
+   * Keeps the Pane grid in step with `cockpit.panes`, without ever rebuilding a Pane's `.screen` — the
+   * one element `xterm.js` owns once a terminal is mounted into it.
+   *
+   * - **No Pane yet, or the grid is still the "no Pane has opened yet" placeholder.** Nothing is mounted
+   *   to protect, so the region is rebuilt outright — this is also what the very first call after the
+   *   initial full-page paint takes when a Pane already exists, because the placeholder was never drawn.
+   * - **Otherwise**, each Pane is visited: one whose shell already exists gets its chrome refreshed in
+   *   place (`renderPaneHead`, into `#head-N`, never touching `#screen-N`); one that does not is a
+   *   brand-new Pane, built through a **detached** scratch element — `document.createElement`, never
+   *   `panesRegion.innerHTML +=`, which would reparse and rebuild every existing Pane's markup, tearing
+   *   an already-mounted terminal's own DOM out along with it — and appended.
+   *
+   * `openPane` runs over every Pane afterward, every time, and its own `opened` guard is what keeps a
+   * chrome-only refresh from mounting anything twice.
+   */
+  const syncPanes = (): void => {
+    const panesRegion = region("panes");
+    if (panesRegion === null) {
+      return;
+    }
+    if (cockpit.panes.length === 0 || panesRegion.children.length === 0) {
+      panesRegion.innerHTML = renderPanes(cockpit);
+    } else {
+      for (const pane of cockpit.panes) {
+        const head = region(`head-${pane.ordinal}`);
+        if (head !== null) {
+          head.innerHTML = renderPaneHead(cockpit, pane);
+          continue;
+        }
+        const scratch = document.createElement("div");
+        scratch.innerHTML = renderPane(cockpit, pane);
+        const article = scratch.firstElementChild;
+        if (article !== null) {
+          panesRegion.appendChild(article);
+        }
+      }
+    }
+    for (const pane of cockpit.panes) {
+      openPane(pane);
+    }
+  };
+
+  // The initial paint may already hold Panes — a test, or a reconnect that folded a Replay before
+  // `attach` ran — and those terminals are exactly as unopened as one `syncPanes` would build fresh, so
+  // this is not a special case: it is the same call every later `panes` change makes.
+  syncPanes();
+
   const redraw = (change: Change | undefined): void => {
     if (change === undefined) {
       return;
     }
-    if (change.kind === "pane-screen") {
-      const screen = region(`screen-${change.pane.ordinal}`);
-      if (screen !== null) {
-        screen.innerHTML = htmlOfScreen(change.pane.screen);
-        screen.scrollTop = screen.scrollHeight;
-        return;
-      }
+    if (change.kind === "panes") {
+      syncPanes();
+      return;
     }
-    const panes = region("panes");
     const mission = region("mission");
     const record = region("record");
     if (mission !== null) {
       mission.innerHTML = renderMission(cockpit);
-    }
-    if (panes !== null) {
-      panes.innerHTML = renderPanes(cockpit);
     }
     if (record !== null) {
       record.innerHTML = renderRecord(cockpit);
@@ -1595,25 +1206,12 @@ function valuesAround(button: HTMLElement): Readonly<Record<string, string>> {
 }
 
 /* =================================================================================================
- * What this terminal does not do, and the Gaps of this view
+ * The Gaps of this view
  *
- * ## The terminal
- *
- * 1. **No alternate screen buffer.** `CSI ?1049h` is consumed, so a full-screen CLI (`vim`, a TUI
- *    installer) draws over the scrollback instead of beside it. What a Zord CLI prints is a stream of
- *    lines, which is the case this is built for.
- * 2. **No insert/delete line or character** (`L`, `M`, `P`, `@`), no scroll region (`r`), no tab stops
- *    (`H` as HTS). A CLI that redraws a progress bar with them leaves the bar behind.
- * 3. **No reflow and no resize.** `rows` and `cols` are fixed when a screen is made and the process is
- *    never told a size, so a CLI that reads `COLUMNS` from its pty gets the pty's, not this screen's.
- *    The two agree only if whoever spawns the Pane uses the same numbers.
- * 4. **One column per code point.** A CJK character or an emoji occupies one cell here and two on the
- *    process's own idea of the screen, so a line of them drifts. No combining-mark handling either.
- * 5. **No mouse, no bracketed paste, no focus reporting.** All consumed.
- * 6. **No UTF-8 assembly.** The server hands over a string the pty already decoded; a code point split
- *    across two reads is `node-pty`'s problem, not this one's.
- *
- * ## The view
+ * The six the hand-rolled emulator used to list here — no alternate buffer, no insert/delete line, no
+ * scroll region, no reflow, one column per code point, no mouse — are `xterm.js`'s problem now, and it
+ * answers all six. What replaces them is what `xterm.js` still leaves to this file and to the browser it
+ * has never run inside.
  *
  * 1. **A Pane's provider and cost are the PaneId read as a DelegationId.** Nothing in the envelope
  *    carries either, and the engine's own rule is that per Pane means per Delegation. When the join
@@ -1628,10 +1226,12 @@ function valuesAround(button: HTMLElement): Readonly<Record<string, string>> {
  *    browser holds no engine. So `renderEntry` writes its own one line per entry from the `ReplayEntry`
  *    the protocol carried, and `client.test.ts` pins the set of Refusals it draws against
  *    `refusedIn(stepsOf(replay))` over the same Replay, so the two readings are proven to agree.
- * 4. **No `kill-mission`.** The PRD names three human answers at a Gate — approve, revise, kill — and
- *    this task's scope names two. A Mission stopped at its Cap whose human does **not** want to spend
- *    more therefore has no answer in this view; the Command exists in the engine and the gesture is four
- *    lines. Recorded as a finding rather than added, because scope is the contract.
+ * 4. **A Pane's OSC title (0/2) is not shown.** `xterm.js` exposes it only through `onTitleChange`, an
+ *    event subscription, and not as a property this file could read at render time the way the hand-rolled
+ *    emulator's `screen.title` was. Wiring it means `attach` subscribing once per Pane and having
+ *    somewhere to put the answer — a small addition, and one this task's scope (a Pane's *bytes* becoming
+ *    pixels) does not reach; the hand-rolled version had exactly one test, and it tested the parser this
+ *    version deletes rather than the view, so nothing that proved the view is lost by dropping it.
  * 5. **`attach` is executed by a test, and not by a browser.** ~~`attach` is not executed by a test~~ —
  *    that Gap was real and QA proved it with a plant: severing the one line that sends a click's gesture
  *    left every test green. It is closed by the shim `client.test.ts` builds, which parses the markup the
@@ -1642,7 +1242,18 @@ function valuesAround(button: HTMLElement): Readonly<Record<string, string>> {
  *
  *    What is still unproven is the vendor's half — that a browser's `closest`, `dataset` and event
  *    dispatch behave as read, that `innerHTML` parses this markup the same way, that anything is laid out
- *    or painted. `jsdom` is not installed and `package.json` is outside this task's scope; the shim is
- *    what a test can have today, and it earned its keep on its first run by finding the `data-value-*`
- *    reading `valuesAround` now records.
+ *    or painted. `jsdom` is deliberately still not installed — closing that Gap is not this task's, even
+ *    though `package.json` is, this time, for `@xterm/xterm` alone — so the shim is what a test can have
+ *    today, and it earned its keep on its first run by finding the `data-value-*` reading `valuesAround`
+ *    now records.
+ * 6. **`xterm.js`'s own half is unproven in exactly the same way, and for the same reason.** `write` and
+ *    the buffer it fills are proven directly against the real library — see `client.test.ts`'s "xterm.js
+ *    actually renders" — because building a `Terminal` touches no DOM. **Mounting one does**: `.open`
+ *    creates its internal elements, measures a character cell against `getComputedStyle`, and paints
+ *    through a canvas or DOM renderer, none of which this file's shim can exercise without becoming a
+ *    second, unfaithful implementation of a browser (`CLAUDE.md`: "a shim is only evidence if it is
+ *    faithful exactly where the code is fragile", and faking `.open()`'s internals would not be). So the
+ *    wiring tests in this file use a `TerminalLike` fake that treats `open` as a no-op it merely records,
+ *    and `syncPanes`'s call to it is proven to happen at the right time, with the right container, and
+ *    exactly once — never that a browser would actually draw anything as a result.
  */

@@ -46,15 +46,51 @@
  * No token in the URL, no session, no CSP. The server binds loopback and refuses a foreign `Origin`, and
  * its own declared Gap says authentication belongs to whoever starts it. This module adds no security of
  * its own and claims none.
+ *
+ * ## `xterm.js`, read from the installed package and served same-origin
+ *
+ * `cockpit/view/client.ts` no longer draws a Pane's bytes itself — it hands them to an `xterm.js`
+ * `Terminal`, and that terminal's own JavaScript and CSS have to reach the browser somehow. Task 6's
+ * client could not add the dependency or the route; this task can, and `xtermAssets()` below is the
+ * reader `cockpit/server.ts`'s `xterm` option asks for, the same shape `clientScript()` already is for
+ * `view`.
+ *
+ * The document references both files with a **same-origin** `<script src="${XTERM_PATH}/xterm.js">` and
+ * `<link rel="stylesheet" href="${XTERM_PATH}/xterm.css">` — paths on this server, never a URL naming
+ * another host. `view.test.ts`'s "asks the browser for nothing" check reads for exactly that difference:
+ * a `<script src="https://…">` or `<script src="//…">` is a CDN and stays refused; a `<script
+ * src="/xterm/xterm.js">` names this server's own second route and is what "no CDN" was always about —
+ * fetching nothing **external**, not fetching nothing at all. Say this here too, because a future reader
+ * scanning this file for `<script src` should not mistake one for the other.
+ *
+ * The classic `<script src>` is placed **before** the module script, and deliberately not `type="module"`
+ * itself: a classic script runs synchronously at its place in the document, so `window.Terminal` — the
+ * global `@xterm/xterm`'s UMD bundle attaches when there is no module system to find — exists before the
+ * deferred module script that constructs one ever runs. A second `import` of `@xterm/xterm` from the
+ * module script was rejected for the reason `client.ts` already refuses any runtime import: a browser
+ * has nowhere to resolve a bare specifier from, with no bundler and no import map in this repository.
  */
 
 import { readFile } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
+import { createRequire, stripTypeScriptTypes } from "node:module";
 
 import { STYLE } from "./view/style";
+import { XTERM_PATH } from "./server";
 
 /** Where the client lives. Read at serve time — see cost 2 in the module doc. */
 export const CLIENT_SOURCE = new URL("./view/client.ts", import.meta.url);
+
+/**
+ * Where the installed `@xterm/xterm` package's browser bundle and stylesheet live.
+ *
+ * Resolved through Node's own module resolution rather than a relative path from this file, because
+ * `node_modules` is not a fixed distance from `cockpit/view.ts` — hoisting, a workspace, a package
+ * manager's own layout can all move it. `createRequire(import.meta.url).resolve` is Node's own answer to
+ * "where does a bare specifier actually live", not a path this module invents or assumes.
+ */
+const resolve = createRequire(import.meta.url);
+export const XTERM_JS_SOURCE = resolve.resolve("@xterm/xterm/lib/xterm.js");
+export const XTERM_CSS_SOURCE = resolve.resolve("@xterm/xterm/css/xterm.css");
 
 /** How many rows, columns and scrollback lines a Pane's screen is drawn with. */
 export const SCREEN = Object.freeze({ rows: 24, cols: 100, maxScrollback: 2000 });
@@ -87,6 +123,20 @@ export async function clientScript(): Promise<string> {
 }
 
 /**
+ * `xterm.js`'s browser bundle and stylesheet, read from the installed package.
+ *
+ * Separate from `cockpitView` for the same reason `clientScript` is: a test reads the shipped bytes on
+ * their own, and `cockpit/server.ts`'s `xterm` option asks for exactly this shape.
+ */
+export async function xtermAssets(): Promise<{ readonly js: string; readonly css: string }> {
+  const [js, css] = await Promise.all([
+    readFile(XTERM_JS_SOURCE, "utf8"),
+    readFile(XTERM_CSS_SOURCE, "utf8"),
+  ]);
+  return { js, css };
+}
+
+/**
  * The whole document, given the client's JavaScript.
  *
  * Pure, and separate from reading the file, so the composition is testable without a disk and the
@@ -105,6 +155,7 @@ export function documentOf(script: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>Cockpit — Megazord Terminal</title>
+<link rel="stylesheet" href="${XTERM_PATH}/xterm.css">
 <style>
 ${STYLE}
 </style>
@@ -112,10 +163,11 @@ ${STYLE}
 <body>
 <main id="cockpit"></main>
 <noscript>The Cockpit draws live processes, so it needs JavaScript. Nothing here works without it.</noscript>
+<script src="${XTERM_PATH}/xterm.js"></script>
 <script type="module">
 ${script}
 
-const cockpit = cockpitOf(${SCREEN.rows}, ${SCREEN.cols}, ${SCREEN.maxScrollback});
+const cockpit = cockpitOf(${SCREEN.rows}, ${SCREEN.cols}, ${SCREEN.maxScrollback}, (rows, cols, scrollback) => new Terminal({ rows, cols, scrollback }));
 const root = document.getElementById("cockpit");
 if (root !== null) {
   const socket = new WebSocket(new URL("/", location.href).href.replace(/^http/u, "ws"));
@@ -173,4 +225,8 @@ function refuseBreakout(what: string, text: string, forbidden: readonly string[]
  * 3. **The stylesheet's tokens are a copy of `app/globals.css`.** Pinned by a test that reads both, so
  *    the copy fails loudly, but it is still a copy — Tailwind needs a build step and this document is
  *    composed at runtime.
+ * 4. **`bin/mz.ts` does not call `xtermAssets()` yet.** It is outside this task's editable scope — see
+ *    `cockpit/server.ts`'s declared Gap on the same collaborator. `xtermAssets()` exists and is tested on
+ *    its own; wiring it into the real `mz .` run is a one-line addition (`xterm: await xtermAssets()`)
+ *    for whoever owns that file.
  * ============================================================================================== */

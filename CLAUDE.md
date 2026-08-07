@@ -1919,6 +1919,36 @@ check.** `data-value="paneId"` depends on none; `data-value-paneId` depended on 
 defect in this repo found by a plant rather than by reading, and the first found by making a double
 *stricter* rather than looser.
 
+### A structural type is enough for a constructor to be DOM-free
+
+`new Terminal(options)` in `@xterm/xterm` builds a parser and a buffer with no browser underneath it —
+only `.open(element)` touches a page. That is what let `client.ts` inject a `TerminalFactory` and call it
+from `fold`, a function this repo requires to stay pure-ish and DOM-free, without smuggling a DOM
+dependency in through the library. Verified directly before writing any code that depended on it: a
+`new Terminal(...).write(...)` read back from `buffer.active` synchronously, no `document` in sight. The
+general form: a vendored dependency's construction and its rendering are not the same claim, and the
+first can be cheap even when the second is not — check which one a call site actually needs before
+assuming the whole library requires a page.
+
+### The document argues its own rule, and a same-origin `<script src` is not the CDN it looks like
+
+`cockpit/view.ts`'s own module doc, in the served document, explains why a `<script src="https://…">`
+was ruled out for Task 6. That sentence is now itself served, `https://` and `<script src` and all, and
+neither a same-origin `<script src="/xterm/xterm.js">` nor the sentence about the CDN it replaced is a
+violation of the rule the sentence states. Same shape `CLAUDE.md` already records for `any`,
+`@ts-expect-error` and Markdown fences: a scan over a served document meets the prose that argues its
+own rule, and the fix is comment-awareness, never deleting the sentence that explains the decision.
+
+### Deleting dead code is itself a decision that needs the same reviewer discipline as writing it
+
+Task 6's hand-rolled terminal emulator (`Screen`, `feed`, the CSI/OSC parser, the ANSI palette — about
+600 lines) was deleted whole once `@xterm/xterm` implemented every one of the six things its own module
+doc had declared missing, rather than kept as a "fallback" nobody would maintain or exercise. The
+deciding question was not "does it still work" but "does anything still call it" — a documented Gap
+list is exactly the checklist for whether a replacement is complete, and it was. The stylesheet rules
+that existed only to draw the deleted emulator's cursor (`.caret`, its `blink` keyframes) went with it;
+leaving unreferenced CSS beside a deleted renderer is the same class of drift as an unreachable guard.
+
 ### Vitest boundaries
 
 - The config is `vitest.config.mts`, not `.ts`: as `.ts` under a `package.json` without
