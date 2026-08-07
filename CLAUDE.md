@@ -1998,19 +1998,45 @@ next product was written without them.
   are versioned so the flow travels with the clone.
 - The **engine** is `engine/domain/` (twelve modules), `engine/ports/agent-runner.ts`,
   `engine/adapters/fake-agent-runner.ts` and `engine/index.ts`, with tests beside their subject plus
-  `engine/mission.e2e.test.ts` at the root, which imports only `@engine/index`. 406 tests. It has **no
+  `engine/mission.e2e.test.ts` at the root, which imports only `@engine/index`. 414 tests. It has **no
   dependency of any kind** — every import inside `engine/` is a relative path, and `mission.e2e.test.ts`
-  asserts that.
-- The **runtime** is `runtime/pty-agent-runner.ts` — the real `AgentRunner`, spawning a CLI through
-  `node-pty` — with `runtime/pty-agent-runner.test.ts` beside it (39 tests, all of them real spawns, no
-  mock of the pty anywhere), plus `runtime/mission-store.ts` — the Replay as JSONL under
-  `.megazord/missions/`, one file per Mission — with `runtime/mission-store.test.ts` (54 tests, real disk,
-  and criterion 8 proven by loading in a `node` process spawned over a compiled tree). It is the **only**
-  place in the repo with a runtime dependency and the only place that touches the operating system.
-  `runtime/` may import `engine/`; `engine/` must never import `runtime/`, and both directions are asserted
-  by tests. The store goes further and imports the engine **only as types**, so no engine code runs in it.
+  asserts that. `replay.ts`'s `added()` reads every field of a recorded fact as `unknown` — hardened
+  during the Cockpit PRD's review, after a Refusal-side reading (`asked`) had been but its Event-side
+  twin had not.
+- The **runtime** is `runtime/pty-agent-runner.ts` (the real `AgentRunner`), `runtime/mission-store.ts`
+  (the Replay as JSONL under `.megazord/missions/`, one file per Mission), `runtime/mission-writer.ts`
+  (the one door every writer of a Mission file goes through — `load → submit → append` as a single
+  queued call, per Mission, with reading left unqueued), `runtime/providers.ts` (which Zord CLIs exist
+  in `PATH`), `runtime/pane-manager.ts` (the live process table: spawn, stream, write, kill by process
+  group, status), `runtime/cortex-store.ts` (Facts on disk, Workspace-scoped), `runtime/mcp-server.ts`
+  (the embedded control plane's protocol, transport-agnostic — no stdio loop, no `node:http`) and
+  `runtime/combination-driver.ts` (the deterministic Core: Briefing plus Combination to Delivery, no
+  model judging anything). 401 tests, real spawns and real disk throughout — no mock of a pty or a
+  file system anywhere in this layer. It is the **only** place in the repo with a runtime dependency
+  and the only place that touches the operating system. `runtime/` may import `engine/`; `engine/`
+  must never import `runtime/`, and both directions are asserted by tests. The store and the writer go
+  further and import the engine **only as types**, so no engine code runs in either.
+- The **Cockpit** is `cockpit/server.ts` (HTTP + WebSocket, hand-rolled RFC 6455, no dependency; also
+  mounts the control plane at `/mcp/<zordId>` and serves `@xterm/xterm` same-origin at `/xterm/*`),
+  `cockpit/protocol.ts` (the envelope both sides share), `cockpit/view.ts` and `cockpit/view/**` (the
+  served document — strict TypeScript stripped at runtime with Node's own `stripTypeScriptTypes`, no
+  build step, no CDN), and `bin/mz.ts` (the entry point: `mz <workspace>` starts everything; `mz mcp`
+  bridges one Zord's stdio to the one control plane over loopback). 243 tests. Every cross-layer import
+  from `runtime/` or `cockpit/` names `@engine/index`, never `@engine/domain/*` (ADR 0008).
 - The **adherence checks** are `tools/glossary-check.ts` (the scanning library), with
-  `tools/glossary-check.test.ts` for criterion 8 and `tools/prd-structure.test.ts` for criteria 9 and 10.
-  They are part of `npm test`, which is 565 tests. `tools/` uses `node:fs` and is the only place in the
-  repo that reads the tree — `runtime/` reads it too, but only to assert its own boundary.
-- The **decisions** are `docs/adr/0001..0007`, one per entry of the techspec's "Decisions worth an ADR".
+  `tools/glossary-check.test.ts` for criterion 8 — scanning `docs/prd/**` **and** `docs/adr/**`, `qa.md`
+  and `bugs.md` included — and `tools/prd-structure.test.ts` for criteria 9 and 10. 64 tests. `tools/`
+  uses `node:fs` and is the only place in the repo that reads the tree — `runtime/` reads it too, but
+  only to assert its own boundary.
+- `npm test` is **1122 tests across 29 files**, `npx tsc --noEmit --incremental false` is clean, and
+  `npm run build` still produces the static site with no engine/runtime/cockpit code pulled into it —
+  `vitest.config.mts`'s `test.include` covers `engine/**`, `runtime/**`, `tools/**` and `cockpit/**`
+  only.
+- The **decisions** are `docs/adr/0001..0012`: `0001..0007` from the Mission Engine PRD, `0008..0011`
+  from the Cockpit PRD's techspec ("Decisions worth an ADR"), and `0012` added during the Cockpit's
+  review for a decision the techspec's original list predates — the single writer per Mission file.
+- **The product runs.** `npm install && node bin/mz.ts <workspace>` starts the Cockpit; the printed URL
+  serves a real terminal per Pane over a real WebSocket, backed by real processes on disk. This is
+  the whole reason the Cockpit PRD exists, and it is worth stating plainly here rather than only as a
+  criterion in a document: the marketing site describes the product, and as of the Cockpit PRD, the
+  product is no longer only described.

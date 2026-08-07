@@ -95,6 +95,12 @@ the Replay is the record and the UI is a reading of it.
 2. **The Replay on disk is the Mission**; server state is derived, never stored.
 3. **A Zord submits its own Handoff** through the control plane; the Cockpit never parses prose.
 4. **The Cockpit is browser-served, not a native app**, and why that is a deviation worth taking.
+5. **Every write to a Mission's file goes through one collaborator, queued per Mission.** Added at
+   review, after the first QA pass found that the three writers' own queues did not order the
+   read-modify-write between them: two `accrue-cost` decided against one stale total were both
+   compared against the Cap, so a Mission could commission work the same two gestures, ordered, would
+   have refused. The fix could not be a lock around the store — a lock taken at `load` deadlocks every
+   reader that never appends — so the atom became a single call with no seam a caller could split.
 
 ## Verification plan
 

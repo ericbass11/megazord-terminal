@@ -6,15 +6,19 @@
 > escreve, testa e entrega — e o ambiente inteiro existe pra coordenar esse time, não pra
 > editar arquivo.
 
-Este repositório contém o **site de produto** do Megazord Terminal: o posicionamento da
-categoria, o desenho das 18 superfícies de coordenação (`/features`), as combinações de
-time prontas, o manifesto e a comparação honesta IDE × ADE.
+Este repositório contém duas coisas: o **site de produto** — posicionamento da categoria,
+o desenho das 18 superfícies de coordenação (`/features`), as combinações de time prontas,
+o manifesto e a comparação honesta IDE × ADE — e, a partir do PRD do Cockpit, **o produto em
+si**: um motor de domínio, um runtime que fala com processos e disco de verdade, e um
+Cockpit que um browser renderiza.
 
 O design de produto por trás do site está documentado em [`docs/PRODUTO.md`](docs/PRODUTO.md).
+A construção do produto segue Spec Driven Design — cada PRD vive em `docs/prd/<slug>/`, o
+processo em [`CLAUDE.md`](CLAUDE.md), a linguagem ubíqua em [`CONTEXT.md`](CONTEXT.md).
 
 ---
 
-## Rodar
+## Rodar o site
 
 ```bash
 npm install
@@ -25,6 +29,28 @@ npm start
 
 Sem dependência de runtime além de Next/React. Fontes são stacks do sistema — nenhuma
 requisição externa, nenhum CDN.
+
+## Rodar o produto
+
+```bash
+npm install
+node bin/mz.ts <workspace>    # ex.: node bin/mz.ts .
+```
+
+Imprime a URL do Cockpit — abra num browser. Detecta os CLIs de Zord presentes no `PATH`,
+sobe um servidor HTTP + WebSocket na porta que o sistema escolher, e monta o control plane
+MCP em `/mcp/<zordId>` para qualquer Zord que rode dentro de um Pane. A Mission é um arquivo
+JSONL sob `.megazord/missions/` dentro do workspace apontado — feche e rode `mz` de novo
+para reabrir com o Replay intacto.
+
+```bash
+npx vitest run    # 1122 testes, engine/ + runtime/ + cockpit/ + tools/
+npx tsc --noEmit --incremental false
+```
+
+`engine/` é puro e não tem dependência nenhuma — nem de `runtime/`, nem de pacote externo.
+`runtime/` é a única camada que toca disco e processo. `cockpit/` fala HTTP e WebSocket e
+não decide nada. O detalhe de cada decisão está em `docs/adr/`.
 
 ## Stack
 
